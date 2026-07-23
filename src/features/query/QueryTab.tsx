@@ -13,6 +13,7 @@ import { ResultTable } from "../grid/ResultTable";
 import type { DbKind, ExecResult, QueryResult } from "../../types";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
+import { normalizeSmartQuotes } from "../../lib/sqlText";
 
 function dialectFor(kind?: DbKind): SQLDialect {
   switch (kind) {
@@ -95,7 +96,8 @@ export function QueryTab({ connId }: { connId: string }) {
                 height="100%"
                 style={{ height: "100%", fontSize: 13 }}
                 extensions={[sql({ dialect: dialectFor(kind) })]}
-                onChange={setText}
+                // WHERE 필터 바와 같은 이유로 스마트 인용부호를 ASCII 로 되돌린다.
+                onChange={(v) => setText(normalizeSmartQuotes(v))}
               />
             </div>
           </Panel>

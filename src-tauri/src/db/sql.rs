@@ -384,6 +384,42 @@ mod tests {
     }
 
     #[test]
+    fn filter_sql_is_inlined_as_written() {
+        let req = FetchPageRequest {
+            conn_id: "c".into(),
+            filter_sql: Some("con_code like 'A0018%'".into()),
+            table: TableRef {
+                database: None,
+                schema: Some("public".into()),
+                name: "contract".into(),
+            },
+            limit: 100,
+            offset: 0,
+            sort: vec![],
+            filters: vec![],
+        };
+        let b = build_fetch(&Dialect::POSTGRES, &req);
+        assert_eq!(
+            b.sql,
+            r#"SELECT * FROM "public"."contract" WHERE (con_code like 'A0018%') LIMIT 100 OFFSET 0"#
+        );
+        assert!(b.params.is_empty());
+
+        let c = build_count(&Dialect::POSTGRES, &req);
+        assert_eq!(
+            c.sql,
+            r#"SELECT COUNT(*) FROM "public"."contract" WHERE (con_code like 'A0018%')"#
+        );
+
+        // 방언별로도 WHERE 본문은 손대지 않는다.
+        for d in [Dialect::MYSQL, Dialect::SQLITE, Dialect::MSSQL] {
+            assert!(build_fetch(&d, &req)
+                .sql
+                .contains("(con_code like 'A0018%')"));
+        }
+    }
+
+    #[test]
     fn update_sets_then_pk() {
         let mut pk = BTreeMap::new();
         pk.insert("id".to_string(), Value::from(7));

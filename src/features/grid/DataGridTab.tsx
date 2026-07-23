@@ -20,6 +20,7 @@ import type {
   TableRef,
 } from "../../types";
 import { useUiStore } from "../../store/uiStore";
+import { normalizeSmartQuotes } from "../../lib/sqlText";
 
 interface Props {
   connId: string;
@@ -311,7 +312,8 @@ export function DataGridTab({ connId, table }: Props) {
           className="where-input mono"
           placeholder="예) id > 100 AND name LIKE '%kim%'   —  Enter 로 적용"
           value={whereDraft}
-          onChange={(e) => setWhereDraft(e.target.value)}
+          // macOS 스마트 인용부호(‘ ’)가 섞이면 DB 가 문자열 구분자로 읽지 못한다.
+          onChange={(e) => setWhereDraft(normalizeSmartQuotes(e.target.value))}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               setOffset(0);

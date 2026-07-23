@@ -442,13 +442,19 @@ impl Driver for MssqlDriver {
     async fn fetch_page(&self, req: &FetchPageRequest) -> Result<TablePage> {
         let built = sql::build_fetch(&DIALECT, req);
         let start = Instant::now();
-        let rows = self.query_rows(&built.sql, &built.params).await?;
+        let rows = self
+            .query_rows(&built.sql, &built.params)
+            .await
+            .map_err(|e| e.with_sql(&built.sql))?;
         let result = rows_to_result(&rows, start.elapsed().as_millis() as u64, false);
 
         let primary_keys = self.primary_keys(&req.table).await.unwrap_or_default();
 
         let cbuilt = sql::build_count(&DIALECT, req);
-        let crows = self.query_rows(&cbuilt.sql, &cbuilt.params).await?;
+        let crows = self
+            .query_rows(&cbuilt.sql, &cbuilt.params)
+            .await
+            .map_err(|e| e.with_sql(&cbuilt.sql))?;
         let total_rows = crows
             .first()
             .and_then(|r| r.try_get::<i32, _>(0).ok().flatten())
@@ -530,5 +536,159 @@ impl Driver for MssqlDriver {
             rows_affected: er.total(),
             elapsed_ms: start.elapsed().as_millis() as u64,
         })
+    }
+}
+
+/// SQL Server 실동작 테스트. 실제 서버가 필요하므로 `#[ignore]` 로 두고,
+/// `DBSTUDIO_MSSQL_TEST=1 cargo test --lib mssql -- --ignored --nocapture` 로 실행한다.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> ConnectionConfig {
+        ConnectionConfig {
+            kind: DbKind::Mssql,
+            host: Some(std::env::var("MSSQL_HOST").unwrap_or_else(|_| "localhost".into())),
+            port: Some(
+                std::env::var("MSSQL_PORT")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(14333),
+            ),
+            database: Some("master".into()),
+            username: Some("sa".into()),
+            password: Some(
+                std::env::var("MSSQL_PASSWORD").unwrap_or_else(|_| "DbStudio!Test123".into()),
+            ),
+            ssl: Some(SslConfig {
+                mode: SslMode::Disable,
+                ca_cert: None,
+                client_cert: None,
+                client_key: None,
+            }),
+            ssh: None,
+            params: Default::default(),
+        }
+    }
+
+    /// WHERE 필터 바처럼 문자열 리터럴이 인라인된 SQL 이
+    /// 두 실행 경로(`simple_query` / `sp_executesql`)에서 각각 어떻게 동작하는지 비교한다.
+    #[tokio::test]
+    #[ignore]
+    async fn where_filter_string_literal_both_paths() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+
+        d.simple_rows("IF OBJECT_ID('dbo.con_test') IS NOT NULL DROP TABLE dbo.con_test")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.con_test (id INT PRIMARY KEY, con_code NVARCHAR(50))")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.con_test VALUES (1,'A0018-1'),(2,'A0018-2'),(3,'A0019-1')")
+            .await
+            .expect("insert");
+
+        let sql = "SELECT * FROM [master].[dbo].[con_test] WHERE (con_code like 'A0018%') \
+                   ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 200 ROWS ONLY";
+
+        // (1) 배치 직접 실행 — SSMS 와 같은 경로
+        let simple = d.simple_rows(sql).await;
+        println!("[simple_query] {:?}", simple.as_ref().map(|r| r.len()));
+
+        // (2) sp_executesql RPC — 파라미터 없이 감싸는 기존 경로
+        {
+            let mut guard = d.client.lock().await;
+            let empty: Vec<&dyn ToSql> = Vec::new();
+            let rpc = match guard.query(sql, &empty).await {
+                Ok(s) => s
+                    .into_first_result()
+                    .await
+                    .map(|r| r.len())
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            println!("[sp_executesql] {rpc:?}");
+        }
+
+        // (3) 실제 앱 경로 — fetch_page(WHERE 필터 바)
+        let page = d
+            .fetch_page(&FetchPageRequest {
+                conn_id: "t".into(),
+                filter_sql: Some("con_code like 'A0018%'".into()),
+                table: TableRef {
+                    database: Some("master".into()),
+                    schema: Some("dbo".into()),
+                    name: "con_test".into(),
+                },
+                limit: 200,
+                offset: 0,
+                sort: vec![],
+                filters: vec![],
+            })
+            .await;
+        println!(
+            "[fetch_page] {:?}",
+            page.as_ref().map(|p| (p.result.rows.len(), p.total_rows))
+        );
+
+        assert_eq!(page.expect("fetch_page 성공").result.rows.len(), 2);
+    }
+
+    /// macOS 스마트 인용부호(U+2018)가 섞인 조건은 SQL Server 가 구문 오류(102)로 거부한다.
+    /// 프론트(`src/lib/sqlText.ts`)에서 ASCII 따옴표로 정규화하는 이유를 고정한다.
+    #[tokio::test]
+    #[ignore]
+    async fn smart_quote_breaks_query() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.con_test2') IS NOT NULL DROP TABLE dbo.con_test2")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.con_test2 (con_code NVARCHAR(50))")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.con_test2 VALUES ('A0018-1')")
+            .await
+            .expect("insert");
+
+        // 여는 따옴표만 U+2018 로 바뀐 상태 — 실제 사용자 입력에서 관측된 형태.
+        let broken = d
+            .fetch_page(&FetchPageRequest {
+                conn_id: "t".into(),
+                filter_sql: Some("con_code like \u{2018}A0018%'".into()),
+                table: TableRef {
+                    database: Some("master".into()),
+                    schema: Some("dbo".into()),
+                    name: "con_test2".into(),
+                },
+                limit: 200,
+                offset: 0,
+                sort: vec![],
+                filters: vec![],
+            })
+            .await;
+        let msg = broken
+            .expect_err("스마트 따옴표는 실패해야 한다")
+            .to_string();
+        println!("[smart quote] {msg}");
+        assert!(msg.contains("102"), "구문 오류(102)가 아님: {msg}");
+
+        // 같은 조건을 ASCII 따옴표로 정규화하면 정상 조회된다.
+        let fixed = d
+            .fetch_page(&FetchPageRequest {
+                conn_id: "t".into(),
+                filter_sql: Some("con_code like 'A0018%'".into()),
+                table: TableRef {
+                    database: Some("master".into()),
+                    schema: Some("dbo".into()),
+                    name: "con_test2".into(),
+                },
+                limit: 200,
+                offset: 0,
+                sort: vec![],
+                filters: vec![],
+            })
+            .await
+            .expect("정규화 후에는 성공");
+        assert_eq!(fixed.result.rows.len(), 1);
     }
 }

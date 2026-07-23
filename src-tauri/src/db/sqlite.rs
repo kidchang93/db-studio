@@ -434,4 +434,39 @@ mod tests {
         assert_eq!(q.rows.len(), 2);
         assert!(q.truncated);
     }
+
+    /// WHERE 필터 바(filter_sql)가 실제 DB 조회까지 반영되는지 확인한다.
+    /// LIKE 패턴의 `%` 가 그대로 전달되어야 한다.
+    #[tokio::test]
+    async fn filter_sql_like_pattern() {
+        let d = mem_driver().await;
+        for (i, code) in ["A0018-1", "A0018-2", "A0019-1"].iter().enumerate() {
+            let mut v = BTreeMap::new();
+            v.insert("id".to_string(), Value::from(i as i64 + 1));
+            v.insert("name".to_string(), Value::from(*code));
+            v.insert("age".to_string(), Value::from(30));
+            d.apply_changes(&ApplyChangesRequest {
+                conn_id: "t".into(),
+                table: table(),
+                edits: vec![RowEdit::Insert { values: v }],
+            })
+            .await
+            .unwrap();
+        }
+
+        let page = d
+            .fetch_page(&FetchPageRequest {
+                conn_id: "t".into(),
+                filter_sql: Some("name like 'A0018%'".into()),
+                table: table(),
+                limit: 100,
+                offset: 0,
+                sort: vec![],
+                filters: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.result.rows.len(), 2);
+        assert_eq!(page.total_rows, Some(2));
+    }
 }

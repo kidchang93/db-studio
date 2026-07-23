@@ -39,6 +39,7 @@
 - **식별자**(테이블/컬럼/스키마명)는 값 바인딩이 불가하므로 DB별 규칙으로 quoting: Postgres/SQLite `"ident"`, MySQL `` `ident` ``, SQL Server `[ident]`. 내부 따옴표는 이스케이프. 이 로직은 driver별 `quote_ident`로 캡슐화.
 - 그리드 CRUD가 생성하는 `UPDATE/DELETE`는 **PK(또는 유니크 키) 기반 WHERE**만 사용. PK가 없는 테이블은 편집을 막고 안내(전체행 매칭 위험 회피).
 - 사용자가 직접 작성한 SQL 에디터 쿼리는 그대로 실행하되(신뢰 경계는 사용자 자신), 다중 문장·DDL 실행 시 확인 단계를 둔다.
+- 사용자가 SQL을 입력하는 곳(SQL 에디터, 그리드 WHERE 필터 바)은 **입력 시점에 스마트 인용부호를 ASCII 따옴표로 정규화**한다(`src/lib/sqlText.ts`의 `normalizeSmartQuotes`). macOS 가 `'` 를 `‘`(U+2018)로 자동 변환하면 DB 가 문자열 구분자로 인식하지 못해 구문 오류가 난다(SQL Server 102). 입력창 값 자체를 바꾸므로 사용자도 화면에서 정규화 결과를 확인할 수 있다.
 
 ## 6. CRUD 편집 모델 (그리드)
 
@@ -54,6 +55,7 @@
 - 백엔드: `AppError`(thiserror)로 종류 구분(`Connection`, `Query`, `Mapping`, `NotFound`, `Validation`, `Internal`). serde 직렬화해 `{ kind, message, detail? }`로 프론트 전달.
 - 프론트: `api/` 래퍼가 reject를 정규화 → 스토어에 저장 → 상태바/토스트로 표시. DB 오류 메시지(SQLSTATE 등)는 원문을 detail에 보존해 디버깅 지원.
 - command 경로에 `unwrap()/expect()` 금지. 모든 실패는 `?`로 `AppError`에 매핑.
+- 사용자가 작성한 조건이 섞인 문장(WHERE 필터 바 등)이 실패하면 `AppError::with_sql()`로 **실제 전송된 SQL을 오류에 덧붙인다**. 어떤 문자가 들어갔는지 눈으로 봐야 원인을 알 수 있는 부류(위 스마트 인용부호 등)가 있기 때문. 현재 SQL Server 드라이버의 `fetch_page`에 적용되어 있고, sqlx 계열은 SQL 소유권 구조상 미적용.
 
 ## 8. UX 설계 지침 (DataGrip 벤치마크)
 

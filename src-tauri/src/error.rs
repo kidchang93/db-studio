@@ -32,6 +32,15 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// 실패한 SQL 을 오류에 덧붙인다. WHERE 필터 바처럼 사용자가 작성한 조건이
+    /// 섞인 문장은 실제로 전송된 SQL 을 봐야 원인을 알 수 있으므로 진단용으로 보존한다.
+    pub fn with_sql(self, sql: &str) -> Self {
+        match self {
+            AppError::Query(m) => AppError::Query(format!("{m}\n실행한 SQL: {sql}")),
+            other => other,
+        }
+    }
+
     /// 프론트엔드에서 분기용으로 쓰는 안정적인 오류 종류 문자열.
     pub fn kind(&self) -> &'static str {
         match self {
