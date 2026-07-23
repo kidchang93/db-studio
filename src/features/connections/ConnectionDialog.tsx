@@ -61,7 +61,9 @@ export function ConnectionDialog({ profile, onClose }: Props) {
     Object.entries(profile?.params ?? {}),
   );
   const [showAdvanced, setShowAdvanced] = useState(
-    !!profile?.ssl || !!profile?.ssh || Object.keys(profile?.params ?? {}).length > 0,
+    (!!profile?.ssl && profile.ssl.mode !== "disable") ||
+      !!profile?.ssh ||
+      Object.keys(profile?.params ?? {}).length > 0,
   );
   const [busy, setBusy] = useState(false);
 
@@ -78,7 +80,9 @@ export function ConnectionDialog({ profile, onClose }: Props) {
   }
 
   function buildSsl(): SslConfig | null {
-    if (usesFile || sslMode === "disable") return null;
+    // SQLite 는 SSL 개념이 없음. 그 외에는 항상 명시적으로 모드를 보낸다
+    // ("사용 안 함"도 명시해야 드라이버가 암호화를 진짜로 끈다 — 특히 SQL Server).
+    if (usesFile) return null;
     return {
       mode: sslMode,
       caCert: caCert || null,
