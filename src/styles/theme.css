@@ -1,0 +1,87 @@
+/* 디자인 토큰. 다크 기본 + 라이트 오버라이드. DataGrip 계열 팔레트. */
+
+:root {
+  --bg: #1e1f22;
+  --bg-panel: #2b2d30;
+  --bg-elevated: #313438;
+  --bg-hover: #34373b;
+  --bg-active: #2e436e;
+  --bg-input: #1e1f22;
+
+  --border: #393b40;
+  --border-strong: #4e5157;
+
+  --text: #dfe1e5;
+  --text-muted: #9da0a8;
+  --text-faint: #6f737a;
+
+  --accent: #3574f0;
+  --accent-hover: #4a82f5;
+  --accent-text: #ffffff;
+
+  --danger: #db5c5c;
+  --danger-bg: #4b2b2b;
+  --success: #5fb865;
+  --warning: #d9a343;
+
+  --dirty: #4a3f1e; /* 편집된 셀 배경 */
+  --dirty-border: #d9a343;
+  --new-row: #24352a; /* 신규 행 배경 */
+  --del-row: #3a2626; /* 삭제 예정 행 배경 */
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard",
+    "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", "Menlo", "Consolas", monospace;
+
+  --row-h: 26px;
+  --radius: 6px;
+  --radius-sm: 4px;
+}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-panel: #f7f8fa;
+  --bg-elevated: #ffffff;
+  --bg-hover: #eef1f5;
+  --bg-active: #d4e2ff;
+  --bg-input: #ffffff;
+
+  --border: #e0e2e6;
+  --border-strong: #c4c7cc;
+
+  --text: #1a1a1a;
+  --text-muted: #626469;
+  --text-faint: #9a9da3;
+
+  --accent: #3574f0;
+  --accent-hover: #2f68d8;
+
+  --danger: #d63a3a;
+  --danger-bg: #fbe9e9;
+  --success: #3a9c40;
+
+  --dirty: #fdf3d6;
+  --dirty-border: #d9a343;
+  --new-row: #e7f6ea;
+  --del-row: #fbe6e6;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #ffffff;
+    --bg-panel: #f7f8fa;
+    --bg-elevated: #ffffff;
+    --bg-hover: #eef1f5;
+    --bg-active: #d4e2ff;
+    --bg-input: #ffffff;
+    --border: #e0e2e6;
+    --border-strong: #c4c7cc;
+    --text: #1a1a1a;
+    --text-muted: #626469;
+    --text-faint: #9a9da3;
+    --danger-bg: #fbe9e9;
+    --dirty: #fdf3d6;
+    --new-row: #e7f6ea;
+    --del-row: #fbe6e6;
+  }
+}

@@ -1,0 +1,62 @@
+name: release
+
+# v로 시작하는 태그(예: v0.1.0)를 푸시하면 실행된다.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write # 릴리스 생성/자산 업로드
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: Intel + Apple Silicon 모두 지원하는 유니버설 바이너리
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          # Windows: .msi / .exe(NSIS)
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 설치
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Rust 설치
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Rust 캐시
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: 프론트엔드 의존성 설치
+        run: npm ci
+
+      - name: 빌드 · 서명 · 릴리스
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 업데이트 아티팩트 서명용 (repo Settings → Secrets 에 등록)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "DB Studio ${{ github.ref_name }}"
+          releaseBody: "자산(Assets)에서 설치 파일을 내려받으세요. 설치된 앱은 이후 자동으로 업데이트됩니다."
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

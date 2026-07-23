@@ -1,0 +1,57 @@
+[package]
+name = "db-studio"
+version = "0.1.0"
+description = "DataGrip 스타일 크로스플랫폼 DB 클라이언트"
+authors = ["kidchang"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "db_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# 자동 업데이트(GitHub Releases) + 업데이트 후 재시작
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 비동기 런타임 (tiberius 는 런타임 비의존이라 직접 tokio 를 제공한다)
+tokio = { version = "1.53", features = ["full"] }
+tokio-util = { version = "0.7.19", features = ["compat"] }
+
+# DB 드라이버: sqlx(PG/MySQL/SQLite) + tiberius(SQL Server)
+# sqlx 0.9 부터 runtime/tls feature 가 분리됨 (runtime-tokio + tls-rustls-ring)
+sqlx = { version = "0.9.0", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "mysql",
+    "sqlite",
+    "chrono",
+    "uuid",
+    "json",
+    "rust_decimal",
+] }
+tiberius = { version = "0.12.3", features = ["chrono", "rust_decimal"] }
+
+# 비밀번호는 OS 키체인에 저장 (keyring 4.x)
+keyring = "4.1"
+
+# 유틸
+futures-util = "0.3"
+async-trait = "0.1.91"
+thiserror = "2.0.19"
+chrono = { version = "0.4.45", features = ["serde"] }
+rust_decimal = { version = "1.42.1", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
