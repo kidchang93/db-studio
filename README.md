@@ -68,7 +68,7 @@ npm run tauri build
 
 Gatekeeper/SmartScreen 경고를 없애려면 OS 코드 서명이 필요하다(유료 인증서). **인증서 없이도 릴리스는 정상 동작하며**, 아래 시크릿을 등록하면 릴리스 워크플로우가 자동으로 서명한다(비어 있으면 서명을 건너뛴다).
 
-**macOS** (Apple Developer 계정 필요) — 아래 GitHub Secrets 등록 시 자동 서명 + 공증:
+**macOS** (Apple Developer 계정 필요) — `.github/workflows/release.yml` 의 `APPLE_*` env 블록 주석을 해제하고, 아래 GitHub Secrets 를 등록하면 자동 서명 + 공증된다. (⚠️ 인증서가 없는데 env 블록만 활성화하면 빈 인증서 import 로 mac 빌드가 실패하므로, 반드시 시크릿과 함께 켤 것):
 
 | Secret | 값 |
 |--------|-----|
