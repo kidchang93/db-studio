@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import * as api from "../../api";
 import type { DbKind, SchemaInfo, TableInfo } from "../../types";
+import { highlight, matches, useTreeFilter } from "./filterContext";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -50,6 +51,12 @@ function Loading({ depth }: { depth: number }) {
       <Loader2 size={13} className="spin" /> <span className="muted">로딩…</span>
     </div>
   );
+}
+
+/** 검색어를 반영해 이름을 강조 렌더링한다. */
+function HighlightedName({ name }: { name: string }) {
+  const filter = useTreeFilter();
+  return <>{highlight(name, filter)}</>;
 }
 
 // ---------- 데이터베이스 레벨 (mssql/mysql) ----------
@@ -107,7 +114,9 @@ function DatabaseNode({
       >
         <Twisty open={open} />
         <Database size={13} />
-        <span className="tree-label">{database}</span>
+        <span className="tree-label">
+          <HighlightedName name={database} />
+        </span>
       </div>
       {open &&
         (kind === "mssql" ? (
@@ -251,7 +260,9 @@ function SchemaNode({
       >
         <Twisty open={open} />
         <Folder size={13} />
-        <span className="tree-label">{schema}</span>
+        <span className="tree-label">
+          <HighlightedName name={schema} />
+        </span>
       </div>
       {open && (
         <TableNodes
@@ -278,6 +289,7 @@ function TableNodes({
   const [tables, setTables] = useState<TableInfo[] | null>(null);
   const toastError = useUiStore((s) => s.toastError);
   const openTable = useWorkspaceStore((s) => s.openTable);
+  const filter = useTreeFilter();
 
   useEffect(() => {
     let cancelled = false;
@@ -303,9 +315,17 @@ function TableNodes({
       </div>
     );
   }
+  const shown = tables.filter((t) => matches(t.name, filter));
+  if (shown.length === 0) {
+    return (
+      <div className="tree-empty" style={{ paddingLeft: depth * 14 + 8 }}>
+        일치하는 테이블 없음
+      </div>
+    );
+  }
   return (
     <>
-      {tables.map((t) => (
+      {shown.map((t) => (
         <div
           key={t.name}
           className="tree-node"
@@ -321,7 +341,7 @@ function TableNodes({
         >
           <span className="tree-twisty" />
           {t.kind === "view" ? <Eye size={13} /> : <Table2 size={13} />}
-          <span className="tree-label">{t.name}</span>
+          <span className="tree-label">{highlight(t.name, filter)}</span>
           {t.kind === "view" && <span className="tree-badge">뷰</span>}
         </div>
       ))}

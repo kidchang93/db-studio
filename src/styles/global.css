@@ -262,6 +262,37 @@ select {
   font-size: 12px;
 }
 
+/* 트리 검색 (speed-search) */
+.tree-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tree-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  font-size: 12px;
+}
+.tree-search-input::placeholder {
+  color: var(--text-faint);
+}
+.tree:focus {
+  outline: none;
+}
+.tree .hl {
+  background: var(--warning);
+  color: #1a1a1a;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
 /* ===== 탭 ===== */
 .tabbar {
   display: flex;

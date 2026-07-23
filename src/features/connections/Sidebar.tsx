@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -6,13 +6,16 @@ import {
   Pencil,
   Plug,
   Plus,
+  Search,
   Terminal,
   Trash2,
   Unplug,
+  X,
 } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { SchemaTree } from "../explorer/SchemaTree";
+import { TreeFilterContext } from "../explorer/filterContext";
 import {
   connIdForProfile,
   useConnectionStore,
@@ -34,6 +37,22 @@ export function Sidebar() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pwPrompt, setPwPrompt] = useState<ConnectionProfile | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConnectionProfile | null>(null);
+  const [filter, setFilter] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // IntelliJ speed-search: 트리에 포커스가 있을 때 문자를 입력하면 검색창으로 넘긴다.
+  function onTreeKeyDown(e: KeyboardEvent) {
+    if (e.target instanceof HTMLInputElement) return;
+    if (e.key === "Escape") {
+      setFilter("");
+      return;
+    }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      setFilter((f) => f + e.key);
+      searchRef.current?.focus();
+      e.preventDefault();
+    }
+  }
 
   useEffect(() => {
     loadProfiles();
@@ -73,7 +92,25 @@ export function Sidebar() {
         </button>
       </div>
 
-      <div className="tree">
+      <div className="tree-search">
+        <Search size={13} className="muted" />
+        <input
+          ref={searchRef}
+          className="tree-search-input"
+          placeholder="검색 (트리에서 바로 타이핑)"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && setFilter("")}
+        />
+        {filter && (
+          <button className="btn icon" title="지우기" onClick={() => setFilter("")}>
+            <X size={13} />
+          </button>
+        )}
+      </div>
+
+      <TreeFilterContext.Provider value={filter}>
+      <div className="tree" tabIndex={0} onKeyDown={onTreeKeyDown}>
         {profiles.length === 0 && (
           <div className="tree-empty">
             연결이 없습니다.
@@ -170,6 +207,7 @@ export function Sidebar() {
           );
         })}
       </div>
+      </TreeFilterContext.Provider>
 
       {dialog && (
         <ConnectionDialog profile={dialog.profile} onClose={() => setDialog(null)} />
