@@ -10,7 +10,7 @@ use crate::error::{AppError, Result};
 use crate::models::*;
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
 use sqlx::AssertSqlSafe;
 use sqlx::{Column, Row, TypeInfo};
 use std::time::Instant;
@@ -38,6 +38,24 @@ impl MysqlDriver {
         }
         if let Some(pw) = &config.password {
             opts = opts.password(pw);
+        }
+        if let Some(ssl) = &config.ssl {
+            opts = opts.ssl_mode(match ssl.mode {
+                SslMode::Disable => MySqlSslMode::Disabled,
+                SslMode::Prefer => MySqlSslMode::Preferred,
+                SslMode::Require => MySqlSslMode::Required,
+                SslMode::VerifyCa => MySqlSslMode::VerifyCa,
+                SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
+            });
+            if let Some(ca) = &ssl.ca_cert {
+                opts = opts.ssl_ca(ca);
+            }
+            if let Some(cert) = &ssl.client_cert {
+                opts = opts.ssl_client_cert(cert);
+            }
+            if let Some(key) = &ssl.client_key {
+                opts = opts.ssl_client_key(key);
+            }
         }
         let pool = MySqlPoolOptions::new()
             .max_connections(5)

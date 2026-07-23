@@ -64,6 +64,21 @@ npm run tauri build
 > Gatekeeper("우클릭 → 열기"로 우회) · Windows SmartScreen 경고가 표시될 수 있다.
 > 이는 업데이터의 minisign 서명과는 별개다.
 
+### 코드 서명 (선택 — 경고 제거)
+
+Gatekeeper/SmartScreen 경고를 없애려면 OS 코드 서명이 필요하다(유료 인증서). **인증서 없이도 릴리스는 정상 동작하며**, 아래 시크릿을 등록하면 릴리스 워크플로우가 자동으로 서명한다(비어 있으면 서명을 건너뛴다).
+
+**macOS** (Apple Developer 계정 필요) — 아래 GitHub Secrets 등록 시 자동 서명 + 공증:
+
+| Secret | 값 |
+|--------|-----|
+| `APPLE_CERTIFICATE` | Developer ID Application 인증서(.p12)를 base64 인코딩한 값 |
+| `APPLE_CERTIFICATE_PASSWORD` | .p12 비밀번호 |
+| `APPLE_SIGNING_IDENTITY` | 예: `Developer ID Application: 이름 (TEAMID)` |
+| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | 공증용 Apple ID · 앱 전용 비밀번호 · 팀 ID |
+
+**Windows** (Authenticode 인증서 필요) — `src-tauri/tauri.conf.json` 의 `bundle.windows` 에 인증서 지문을 추가하고 러너에 인증서를 설치하거나, Azure Trusted Signing 등을 `signCommand` 로 연결한다. (미서명 시 SmartScreen "추가 정보 → 실행"으로 우회 가능.)
+
 ## 품질 검사
 
 ```bash

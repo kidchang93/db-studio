@@ -19,6 +19,22 @@ export type LogicalType =
   | "array"
   | "unknown";
 
+export type SslMode = "disable" | "prefer" | "require" | "verifyCa" | "verifyFull";
+
+export interface SslConfig {
+  mode: SslMode;
+  caCert?: string | null;
+  clientCert?: string | null;
+  clientKey?: string | null;
+}
+
+export interface SshConfig {
+  host: string;
+  port?: number | null;
+  user: string;
+  keyPath?: string | null;
+}
+
 export interface ConnectionConfig {
   kind: DbKind;
   host?: string | null;
@@ -26,6 +42,8 @@ export interface ConnectionConfig {
   database?: string | null;
   username?: string | null;
   password?: string | null;
+  ssl?: SslConfig | null;
+  ssh?: SshConfig | null;
   params?: Record<string, string>;
 }
 
@@ -38,6 +56,8 @@ export interface ConnectionProfile {
   database?: string | null;
   username?: string | null;
   savePassword: boolean;
+  ssl?: SslConfig | null;
+  ssh?: SshConfig | null;
   params: Record<string, string>;
 }
 

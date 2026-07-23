@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::models::*;
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode};
 use sqlx::AssertSqlSafe;
 use sqlx::{Column, Row, TypeInfo};
 use std::time::Instant;
@@ -35,6 +35,27 @@ impl PostgresDriver {
         }
         if let Some(pw) = &config.password {
             opts = opts.password(pw);
+        }
+        if let Some(ssl) = &config.ssl {
+            opts = opts.ssl_mode(match ssl.mode {
+                SslMode::Disable => PgSslMode::Disable,
+                SslMode::Prefer => PgSslMode::Prefer,
+                SslMode::Require => PgSslMode::Require,
+                SslMode::VerifyCa => PgSslMode::VerifyCa,
+                SslMode::VerifyFull => PgSslMode::VerifyFull,
+            });
+            if let Some(ca) = &ssl.ca_cert {
+                opts = opts.ssl_root_cert(ca);
+            }
+            if let Some(cert) = &ssl.client_cert {
+                opts = opts.ssl_client_cert(cert);
+            }
+            if let Some(key) = &ssl.client_key {
+                opts = opts.ssl_client_key(key);
+            }
+        }
+        if let Some(app) = config.params.get("application_name") {
+            opts = opts.application_name(app);
         }
         let pool = PgPoolOptions::new()
             .max_connections(5)

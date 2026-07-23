@@ -72,4 +72,11 @@
 - 연결 문자열/쿼리 로그에 자격증명이 섞이지 않도록 마스킹.
 - 사내 도구 전제이나, 원격 텔레메트리·외부 전송은 하지 않는다(전량 로컬).
 
+## 10. 연결 전송 보안 옵션
+
+- **SSL/TLS**(`SslConfig`): 모드(disable~verify-full) + CA/클라이언트 cert/key 경로. PG/MySQL 은 sqlx 옵션으로, MSSQL 은 encrypt/trust(+CA)로 매핑(`db/*.rs::connect`). 인증서는 **파일 경로**만 프로필에 저장(파일 자체는 사용자 디스크에 유지).
+- **SSH 터널**(`SshConfig`): OS `ssh` 클라이언트로 로컬 포트포워딩(`db/tunnel.rs`). 키 기반 인증(`BatchMode`), 터널은 `ManagedConnection` 수명에 묶여 disconnect 시 종료. `verify-full` + SSH 동시 사용 시 호스트명 검증이 127.0.0.1 과 충돌할 수 있음(문서화된 한계).
+- **자유 파라미터**(`params`): 드라이버가 인식하는 키만 적용(예: PG `application_name`). 미지원 키는 무시.
+- 새 전송 옵션 추가 시: `models.rs`(+TS 타입) → 각 드라이버 `connect` 매핑 → `ConnectionDialog` 고급 섹션 UI 순으로 확장.
+
 <!-- TODO: 확인 필요 — 쿼리 히스토리/북마크, 결과 export(CSV/JSON), 다크·라이트 테마 토글은 MVP 이후 로드맵. -->

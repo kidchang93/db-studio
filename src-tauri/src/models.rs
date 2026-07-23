@@ -36,6 +36,46 @@ pub enum LogicalType {
     Unknown,
 }
 
+/// SSL/TLS 검증 수준. libpq/mysql 규약을 따른다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SslMode {
+    Disable,
+    Prefer,
+    Require,
+    VerifyCa,
+    VerifyFull,
+}
+
+/// DB 연결의 SSL/TLS 옵션.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SslConfig {
+    pub mode: SslMode,
+    /// CA 인증서 파일 경로(서버 검증용).
+    #[serde(default)]
+    pub ca_cert: Option<String>,
+    /// 클라이언트 인증서 파일 경로(mTLS).
+    #[serde(default)]
+    pub client_cert: Option<String>,
+    /// 클라이언트 개인키 파일 경로(mTLS).
+    #[serde(default)]
+    pub client_key: Option<String>,
+}
+
+/// SSH 터널(bastion 경유) 옵션. OS `ssh` 클라이언트로 로컬 포트포워딩한다(키 기반 인증).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConfig {
+    pub host: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    pub user: String,
+    /// 개인키 파일 경로. 없으면 ssh-agent/기본 키를 사용한다.
+    #[serde(default)]
+    pub key_path: Option<String>,
+}
+
 /// 연결에 필요한 접속 정보 (비밀번호 포함). connect 시점에 사용.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +92,13 @@ pub struct ConnectionConfig {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
-    /// 드라이버별 추가 옵션 (sslmode, encrypt, trustCert 등).
+    /// SSL/TLS 옵션(없으면 비활성).
+    #[serde(default)]
+    pub ssl: Option<SslConfig>,
+    /// SSH 터널 옵션(없으면 직결).
+    #[serde(default)]
+    pub ssh: Option<SshConfig>,
+    /// 드라이버별 추가 옵션 (application_name, charset 등 자유 key=value).
     #[serde(default)]
     pub params: std::collections::HashMap<String, String>,
 }
@@ -76,6 +122,10 @@ pub struct ConnectionProfile {
     #[serde(default)]
     pub save_password: bool,
     #[serde(default)]
+    pub ssl: Option<SslConfig>,
+    #[serde(default)]
+    pub ssh: Option<SshConfig>,
+    #[serde(default)]
     pub params: std::collections::HashMap<String, String>,
 }
 
@@ -89,6 +139,8 @@ impl ConnectionProfile {
             database: self.database.clone(),
             username: self.username.clone(),
             password,
+            ssl: self.ssl.clone(),
+            ssh: self.ssh.clone(),
             params: self.params.clone(),
         }
     }

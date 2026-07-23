@@ -1,6 +1,6 @@
 //! 앱 전역 상태: 활성 커넥션 레지스트리.
 
-use crate::db::DbConnection;
+use crate::db::ManagedConnection;
 use crate::error::{AppError, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub struct AppState {
-    conns: Mutex<HashMap<String, Arc<DbConnection>>>,
+    conns: Mutex<HashMap<String, Arc<ManagedConnection>>>,
     counter: AtomicU64,
 }
 
@@ -27,14 +27,14 @@ impl AppState {
     }
 
     /// 커넥션을 등록하고 발급한 `connId` 를 돌려준다.
-    pub async fn insert(&self, conn: DbConnection) -> String {
+    pub async fn insert(&self, conn: ManagedConnection) -> String {
         let id = format!("conn-{}", self.counter.fetch_add(1, Ordering::Relaxed));
         self.conns.lock().await.insert(id.clone(), Arc::new(conn));
         id
     }
 
     /// `connId` 로 커넥션을 조회한다. 없으면 NotFound.
-    pub async fn get(&self, id: &str) -> Result<Arc<DbConnection>> {
+    pub async fn get(&self, id: &str) -> Result<Arc<ManagedConnection>> {
         self.conns
             .lock()
             .await

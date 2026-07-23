@@ -178,9 +178,28 @@ impl MssqlDriver {
             cfg.database(db);
         }
         cfg.authentication(AuthMethod::sql_server(&username, &password));
-        // 사내망 자체 서명 인증서를 허용(기본). 필요 시 params 로 조정.
-        if config.params.get("trustCert").map(|s| s == "false") != Some(true) {
-            cfg.trust_cert();
+        if let Some(app) = config.params.get("application_name") {
+            cfg.application_name(app);
+        }
+
+        // SSL/TLS: 지정이 있으면 그에 따르고, 없으면 사내망 편의를 위해 서버 인증서를 신뢰.
+        match &config.ssl {
+            Some(ssl) => {
+                cfg.encryption(match ssl.mode {
+                    SslMode::Disable => tiberius::EncryptionLevel::NotSupported,
+                    _ => tiberius::EncryptionLevel::Required,
+                });
+                match ssl.mode {
+                    SslMode::VerifyCa | SslMode::VerifyFull => {
+                        // CA 지정 시 해당 CA 로 검증, 없으면 시스템 신뢰 저장소로 검증.
+                        if let Some(ca) = &ssl.ca_cert {
+                            cfg.trust_cert_ca(ca);
+                        }
+                    }
+                    _ => cfg.trust_cert(),
+                }
+            }
+            None => cfg.trust_cert(),
         }
 
         let tcp = TcpStream::connect(cfg.get_addr()).await?;
