@@ -365,6 +365,36 @@ select {
   overflow: auto;
   min-height: 0;
 }
+
+/* DataGrip 스타일 WHERE 필터 바 */
+.where-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.where-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: 0.5px;
+}
+.where-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  outline: none;
+  font-size: 12px;
+}
+.where-input:focus {
+  border-color: var(--accent);
+}
 table.grid {
   border-collapse: separate;
   border-spacing: 0;

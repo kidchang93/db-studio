@@ -138,6 +138,8 @@ export interface FetchPageRequest {
   offset: number;
   sort: SortSpec[];
   filters: FilterSpec[];
+  /** DataGrip 스타일 WHERE 조건(사용자 직접 입력). */
+  filterSql?: string | null;
 }
 
 export interface TablePage {

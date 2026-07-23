@@ -39,6 +39,7 @@ export function Sidebar() {
   const [deleteTarget, setDeleteTarget] = useState<ConnectionProfile | null>(null);
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
 
   // IntelliJ speed-search: 트리에 포커스가 있을 때 문자를 입력하면 검색창으로 넘긴다.
   function onTreeKeyDown(e: KeyboardEvent) {
@@ -100,7 +101,11 @@ export function Sidebar() {
           placeholder="검색 (트리에서 바로 타이핑)"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          onKeyDown={(e) => e.key === "Escape" && setFilter("")}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setFilter("");
+            // Enter: 입력을 마치고 트리로 포커스를 넘긴다.
+            else if (e.key === "Enter") treeRef.current?.focus();
+          }}
         />
         {filter && (
           <button className="btn icon" title="지우기" onClick={() => setFilter("")}>
@@ -110,7 +115,7 @@ export function Sidebar() {
       </div>
 
       <TreeFilterContext.Provider value={filter}>
-      <div className="tree" tabIndex={0} onKeyDown={onTreeKeyDown}>
+      <div className="tree" ref={treeRef} tabIndex={0} onKeyDown={onTreeKeyDown}>
         {profiles.length === 0 && (
           <div className="tree-empty">
             연결이 없습니다.

@@ -143,9 +143,18 @@ fn cmp_op(op: &str) -> Option<&'static str> {
 }
 
 /// WHERE 절과 파라미터를 만든다. `next` 는 시작 플레이스홀더 인덱스(1-base).
-fn build_where(d: &Dialect, filters: &[FilterSpec], next: &mut usize) -> (String, Vec<Value>) {
+/// `raw` 는 사용자가 직접 입력한 조건식(그대로 삽입).
+fn build_where(
+    d: &Dialect,
+    filters: &[FilterSpec],
+    raw: Option<&str>,
+    next: &mut usize,
+) -> (String, Vec<Value>) {
     let mut clauses = Vec::new();
     let mut params = Vec::new();
+    if let Some(r) = raw.map(str::trim).filter(|r| !r.is_empty()) {
+        clauses.push(format!("({r})"));
+    }
     for f in filters {
         let col = d.quote_ident(&f.column);
         match f.op.as_str() {
@@ -171,7 +180,7 @@ fn build_where(d: &Dialect, filters: &[FilterSpec], next: &mut usize) -> (String
 pub fn build_fetch(d: &Dialect, req: &FetchPageRequest) -> Built {
     let table = d.qualify(&req.table);
     let mut next = 1usize;
-    let (where_sql, params) = build_where(d, &req.filters, &mut next);
+    let (where_sql, params) = build_where(d, &req.filters, req.filter_sql.as_deref(), &mut next);
 
     let mut sql = format!("SELECT * FROM {table}{where_sql}");
 
@@ -214,7 +223,7 @@ pub fn build_fetch(d: &Dialect, req: &FetchPageRequest) -> Built {
 pub fn build_count(d: &Dialect, req: &FetchPageRequest) -> Built {
     let table = d.qualify(&req.table);
     let mut next = 1usize;
-    let (where_sql, params) = build_where(d, &req.filters, &mut next);
+    let (where_sql, params) = build_where(d, &req.filters, req.filter_sql.as_deref(), &mut next);
     Built {
         sql: format!("SELECT COUNT(*) FROM {table}{where_sql}"),
         params,
@@ -328,6 +337,7 @@ mod tests {
     fn fetch_pg_uses_numbered_placeholders_and_limit() {
         let req = FetchPageRequest {
             conn_id: "c".into(),
+            filter_sql: None,
             table: TableRef {
                 database: None,
                 schema: Some("public".into()),
@@ -357,6 +367,7 @@ mod tests {
     fn mssql_uses_offset_fetch_and_requires_order() {
         let req = FetchPageRequest {
             conn_id: "c".into(),
+            filter_sql: None,
             table: TableRef {
                 database: None,
                 schema: Some("dbo".into()),

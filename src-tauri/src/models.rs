@@ -277,6 +277,10 @@ pub struct FetchPageRequest {
     pub sort: Vec<SortSpec>,
     #[serde(default)]
     pub filters: Vec<FilterSpec>,
+    /// 사용자가 직접 입력한 WHERE 조건(DataGrip 스타일 필터 바).
+    /// 신뢰 경계는 사용자 자신(SQL 에디터와 동일). 비어 있으면 무시.
+    #[serde(default)]
+    pub filter_sql: Option<String>,
 }
 
 /// 페이지 조회 결과: 데이터 + 편집에 필요한 PK 컬럼 목록.

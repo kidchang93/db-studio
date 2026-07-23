@@ -8,6 +8,7 @@ import {
   RefreshCw,
   RotateCcw,
   Trash2,
+  X,
 } from "lucide-react";
 import * as api from "../../api";
 import type {
@@ -66,6 +67,10 @@ export function DataGridTab({ connId, table }: Props) {
   const [offset, setOffset] = useState(0);
   const [sort, setSort] = useState<SortSpec[]>([]);
   const [loading, setLoading] = useState(false);
+  /** 실제 조회에 적용된 WHERE (Enter/버튼으로 확정) */
+  const [whereSql, setWhereSql] = useState("");
+  /** 입력 중인 WHERE 텍스트 */
+  const [whereDraft, setWhereDraft] = useState("");
 
   // 편집 상태
   const [edits, setEdits] = useState<Record<number, Record<string, Cell>>>({});
@@ -98,6 +103,7 @@ export function DataGridTab({ connId, table }: Props) {
         offset,
         sort,
         filters: [],
+        filterSql: whereSql || null,
       });
       setPage(p);
       setEdits({});
@@ -115,7 +121,7 @@ export function DataGridTab({ connId, table }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [connId, table, offset, sort]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connId, table, offset, sort, whereSql]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();
@@ -298,6 +304,49 @@ export function DataGridTab({ connId, table }: Props) {
         </button>
       </div>
 
+      {/* DataGrip 스타일 WHERE 필터 바 */}
+      <div className="where-bar">
+        <span className="where-label">WHERE</span>
+        <input
+          className="where-input mono"
+          placeholder="예) id > 100 AND name LIKE '%kim%'   —  Enter 로 적용"
+          value={whereDraft}
+          onChange={(e) => setWhereDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              setOffset(0);
+              setWhereSql(whereDraft);
+            } else if (e.key === "Escape") {
+              setWhereDraft("");
+              setOffset(0);
+              setWhereSql("");
+            }
+          }}
+        />
+        {whereSql && (
+          <button
+            className="btn icon"
+            title="필터 지우기"
+            onClick={() => {
+              setWhereDraft("");
+              setOffset(0);
+              setWhereSql("");
+            }}
+          >
+            <X size={14} />
+          </button>
+        )}
+        <button
+          className="btn sm"
+          onClick={() => {
+            setOffset(0);
+            setWhereSql(whereDraft);
+          }}
+        >
+          적용
+        </button>
+      </div>
+
       {!editable && page && (
         <div className="grid-toolbar" style={{ color: "var(--warning)" }}>
           <Ban size={13} /> 이 테이블은 기본 키가 없어 읽기 전용입니다.
@@ -356,6 +405,7 @@ export function DataGridTab({ connId, table }: Props) {
                         {isEditingCell ? (
                           <CellEditor
                             initial={val}
+                            logicalType={c.logicalType}
                             onCommit={(raw) => {
                               setExistingCell(rowIdx, c.name, coerce(raw, c.logicalType));
                               setEditing(null);
@@ -394,6 +444,7 @@ export function DataGridTab({ connId, table }: Props) {
                       {isEditingCell ? (
                         <CellEditor
                           initial={val}
+                          logicalType={c.logicalType}
                           onCommit={(raw) => {
                             const v = coerce(raw, c.logicalType);
                             setInserts((p) =>
@@ -429,25 +480,73 @@ export function DataGridTab({ connId, table }: Props) {
   );
 }
 
+/** DB 문자열 → <input type=date|datetime-local|time> 이 받는 형식. */
+function toDateInput(raw: string, lt: LogicalType): string {
+  if (!raw) return "";
+  if (lt === "datetime") {
+    const s = raw.replace(" ", "T");
+    const m = s.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(:\d{2})?/);
+    return m ? m[1] + (m[2] ?? ":00") : "";
+  }
+  if (lt === "date") {
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return m ? m[1] : "";
+  }
+  if (lt === "time") {
+    const m = raw.match(/^(\d{2}:\d{2})(:\d{2})?/);
+    return m ? m[1] + (m[2] ?? ":00") : "";
+  }
+  return raw;
+}
+
+/** 날짜 입력값 → DB 로 보낼 문자열. */
+function fromDateInput(v: string, lt: LogicalType): string {
+  if (!v) return "";
+  return lt === "datetime" ? v.replace("T", " ") : v;
+}
+
 function CellEditor({
   initial,
+  logicalType,
   onCommit,
   onCancel,
 }: {
   initial: Cell;
+  logicalType: LogicalType;
   onCommit: (raw: string) => void;
   onCancel: () => void;
 }) {
-  const [v, setV] = useState(initial === null ? "" : String(initial));
+  const isDate =
+    logicalType === "date" || logicalType === "datetime" || logicalType === "time";
+  const inputType =
+    logicalType === "date"
+      ? "date"
+      : logicalType === "datetime"
+        ? "datetime-local"
+        : logicalType === "time"
+          ? "time"
+          : "text";
+
+  const [v, setV] = useState(
+    initial === null
+      ? ""
+      : isDate
+        ? toDateInput(String(initial), logicalType)
+        : String(initial),
+  );
+  const commit = () => onCommit(isDate ? fromDateInput(v, logicalType) : v);
+
   return (
     <input
       className="cell-input"
+      type={inputType}
+      step={isDate ? 1 : undefined}
       autoFocus
       value={v}
       onChange={(e) => setV(e.target.value)}
-      onBlur={() => onCommit(v)}
+      onBlur={commit}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onCommit(v);
+        if (e.key === "Enter") commit();
         else if (e.key === "Escape") onCancel();
       }}
     />

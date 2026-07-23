@@ -344,6 +344,7 @@ mod tests {
         let page = d
             .fetch_page(&FetchPageRequest {
                 conn_id: "t".into(),
+                filter_sql: None,
                 table: table(),
                 limit: 100,
                 offset: 0,
@@ -413,6 +414,7 @@ mod tests {
         let page = d
             .fetch_page(&FetchPageRequest {
                 conn_id: "t".into(),
+                filter_sql: None,
                 table: table(),
                 limit: 100,
                 offset: 0,

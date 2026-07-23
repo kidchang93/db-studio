@@ -122,9 +122,42 @@ fn cell_to_json(d: &ColumnData) -> Value {
             .as_ref()
             .map(|b| Value::String(value::hex_preview(b)))
             .unwrap_or(Value::Null),
-        // DATE/TIME/DATETIME/XML 등은 best-effort.
+        // 날짜/시간은 rows_to_result 에서 chrono 로 별도 디코딩한다(여기 오면 미지원 타입).
         other => Value::String(format!("{other:?}")),
     }
+}
+
+/// 날짜/시간 컬럼은 ColumnData 를 직접 읽으면 내부 표현이 노출되므로
+/// chrono 타입으로 변환해 사람이 읽을 수 있는 문자열로 만든다.
+fn datetime_cell(row: &TdsRow, idx: usize, ct: ColumnType) -> Option<Value> {
+    let v = match ct {
+        ColumnType::Datetime
+        | ColumnType::Datetime2
+        | ColumnType::Datetimen
+        | ColumnType::Datetime4 => row
+            .try_get::<chrono::NaiveDateTime, _>(idx)
+            .ok()
+            .flatten()
+            .map(|d| Value::String(d.to_string())),
+        ColumnType::Daten => row
+            .try_get::<chrono::NaiveDate, _>(idx)
+            .ok()
+            .flatten()
+            .map(|d| Value::String(d.to_string())),
+        ColumnType::Timen => row
+            .try_get::<chrono::NaiveTime, _>(idx)
+            .ok()
+            .flatten()
+            .map(|t| Value::String(t.to_string())),
+        ColumnType::DatetimeOffsetn => row
+            .try_get::<chrono::DateTime<chrono::Utc>, _>(idx)
+            .ok()
+            .flatten()
+            .map(|t| Value::String(t.to_rfc3339())),
+        _ => return None, // 날짜/시간 계열이 아님
+    };
+    // 날짜 계열이지만 NULL 이면 Null.
+    Some(v.unwrap_or(Value::Null))
 }
 
 fn rows_to_result(rows: &[TdsRow], elapsed_ms: u64, truncated: bool) -> QueryResult {
@@ -145,7 +178,14 @@ fn rows_to_result(rows: &[TdsRow], elapsed_ms: u64, truncated: bool) -> QueryRes
     };
     let data = rows
         .iter()
-        .map(|r| r.cells().map(|(_, d)| cell_to_json(d)).collect())
+        .map(|r| {
+            r.cells()
+                .enumerate()
+                .map(|(i, (col, d))| {
+                    datetime_cell(r, i, col.column_type()).unwrap_or_else(|| cell_to_json(d))
+                })
+                .collect()
+        })
         .collect();
     QueryResult {
         columns,
