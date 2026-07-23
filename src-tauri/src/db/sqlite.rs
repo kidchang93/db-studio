@@ -109,7 +109,11 @@ impl Driver for SqliteDriver {
         Ok(vec![])
     }
 
-    async fn list_tables(&self, _schema: Option<&str>) -> Result<Vec<TableInfo>> {
+    async fn list_tables(
+        &self,
+        _database: Option<&str>,
+        _schema: Option<&str>,
+    ) -> Result<Vec<TableInfo>> {
         let rows = sqlx::query(
             "SELECT name, type FROM sqlite_master \
              WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -298,6 +302,7 @@ mod tests {
 
     fn table() -> TableRef {
         TableRef {
+            database: None,
             schema: None,
             name: "users".into(),
         }

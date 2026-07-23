@@ -69,9 +69,14 @@ export function listSchemas(
 
 export function listTables(
   connId: string,
+  database?: string | null,
   schema?: string | null,
 ): Promise<TableInfo[]> {
-  return invoke("list_tables", { connId, schema: schema ?? null });
+  return invoke("list_tables", {
+    connId,
+    database: database ?? null,
+    schema: schema ?? null,
+  });
 }
 
 export function listColumns(

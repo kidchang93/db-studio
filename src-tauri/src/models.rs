@@ -240,6 +240,9 @@ pub struct ExecResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableRef {
+    /// 다중 DB 지원(SQL Server 3-part, MySQL db.table). None 이면 연결된 DB.
+    #[serde(default)]
+    pub database: Option<String>,
     #[serde(default)]
     pub schema: Option<String>,
     pub name: String,

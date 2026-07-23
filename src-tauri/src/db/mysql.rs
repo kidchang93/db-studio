@@ -76,7 +76,8 @@ impl MysqlDriver {
     }
 
     async fn resolve_schema(&self, table: &TableRef) -> Result<String> {
-        match &table.schema {
+        // database(다중 DB 탐색) 우선, 없으면 schema, 그것도 없으면 현재 DB.
+        match table.database.as_ref().or(table.schema.as_ref()) {
             Some(s) if !s.is_empty() => Ok(s.clone()),
             _ => self.current_database().await,
         }
@@ -154,8 +155,13 @@ impl Driver for MysqlDriver {
         Ok(vec![])
     }
 
-    async fn list_tables(&self, schema: Option<&str>) -> Result<Vec<TableInfo>> {
-        let schema = match schema {
+    async fn list_tables(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableInfo>> {
+        // MySQL 은 데이터베이스가 곧 스키마.
+        let schema = match database.or(schema) {
             Some(s) if !s.is_empty() => s.to_string(),
             _ => self.current_database().await?,
         };

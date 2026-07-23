@@ -115,6 +115,7 @@ export interface ExecResult {
 }
 
 export interface TableRef {
+  database?: string | null;
   schema?: string | null;
   name: string;
 }

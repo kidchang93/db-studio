@@ -233,6 +233,14 @@ fn get_str(row: &TdsRow, col: &str) -> String {
         .to_string()
 }
 
+/// 다른 DB 의 카탈로그를 3-part 로 조회하기 위한 `[db].` 접두사. database 는 quoting 됨.
+fn db_prefix(database: Option<&str>) -> String {
+    match database {
+        Some(db) if !db.is_empty() => format!("{}.", DIALECT.quote_ident(db)),
+        _ => String::new(),
+    }
+}
+
 #[async_trait]
 impl Driver for MssqlDriver {
     fn kind(&self) -> DbKind {
@@ -261,17 +269,17 @@ impl Driver for MssqlDriver {
             .collect())
     }
 
-    async fn list_schemas(&self, _database: Option<&str>) -> Result<Vec<SchemaInfo>> {
-        let rows = self
-            .simple_rows(
-                "SELECT s.name AS schema_name FROM sys.schemas s \
-                 WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest', \
-                   'db_owner','db_accessadmin','db_securityadmin','db_ddladmin', \
-                   'db_backupoperator','db_datareader','db_datawriter', \
-                   'db_denydatareader','db_denydatawriter') \
-                 ORDER BY s.name",
-            )
-            .await?;
+    async fn list_schemas(&self, database: Option<&str>) -> Result<Vec<SchemaInfo>> {
+        let prefix = db_prefix(database);
+        let sql = format!(
+            "SELECT s.name AS schema_name FROM {prefix}sys.schemas s \
+             WHERE s.name NOT IN ('sys','INFORMATION_SCHEMA','guest', \
+               'db_owner','db_accessadmin','db_securityadmin','db_ddladmin', \
+               'db_backupoperator','db_datareader','db_datawriter', \
+               'db_denydatareader','db_denydatawriter') \
+             ORDER BY s.name"
+        );
+        let rows = self.simple_rows(&sql).await?;
         Ok(rows
             .iter()
             .map(|r| SchemaInfo {
@@ -280,14 +288,19 @@ impl Driver for MssqlDriver {
             .collect())
     }
 
-    async fn list_tables(&self, schema: Option<&str>) -> Result<Vec<TableInfo>> {
+    async fn list_tables(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableInfo>> {
         let schema = schema.unwrap_or("dbo").to_string();
+        let prefix = db_prefix(database);
+        let sql = format!(
+            "SELECT TABLE_NAME, TABLE_TYPE FROM {prefix}INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = @P1 ORDER BY TABLE_NAME"
+        );
         let rows = self
-            .query_rows(
-                "SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES \
-                 WHERE TABLE_SCHEMA = @P1 ORDER BY TABLE_NAME",
-                &[Value::String(schema.clone())],
-            )
+            .query_rows(&sql, &[Value::String(schema.clone())])
             .await?;
         Ok(rows
             .iter()
@@ -308,22 +321,26 @@ impl Driver for MssqlDriver {
 
     async fn list_columns(&self, table: &TableRef) -> Result<Vec<ColumnInfo>> {
         let schema = schema_or_default(table);
+        let p = db_prefix(table.database.as_deref());
+        let sql = format!(
+            "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, \
+                    c.ORDINAL_POSITION, \
+                    CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_pk \
+             FROM {p}INFORMATION_SCHEMA.COLUMNS c \
+             LEFT JOIN ( \
+                SELECT kcu.COLUMN_NAME \
+                FROM {p}INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
+                JOIN {p}INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu \
+                  ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+                WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' \
+                  AND tc.TABLE_SCHEMA = @P1 AND tc.TABLE_NAME = @P2 \
+             ) pk ON pk.COLUMN_NAME = c.COLUMN_NAME \
+             WHERE c.TABLE_SCHEMA = @P3 AND c.TABLE_NAME = @P4 \
+             ORDER BY c.ORDINAL_POSITION"
+        );
         let rows = self
             .query_rows(
-                "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, \
-                        c.ORDINAL_POSITION, \
-                        CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_pk \
-                 FROM INFORMATION_SCHEMA.COLUMNS c \
-                 LEFT JOIN ( \
-                    SELECT kcu.COLUMN_NAME \
-                    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
-                    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu \
-                      ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
-                    WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' \
-                      AND tc.TABLE_SCHEMA = @P1 AND tc.TABLE_NAME = @P2 \
-                 ) pk ON pk.COLUMN_NAME = c.COLUMN_NAME \
-                 WHERE c.TABLE_SCHEMA = @P3 AND c.TABLE_NAME = @P4 \
-                 ORDER BY c.ORDINAL_POSITION",
+                &sql,
                 &[
                     Value::String(schema.clone()),
                     Value::String(table.name.clone()),
@@ -363,15 +380,19 @@ impl Driver for MssqlDriver {
 
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {
         let schema = schema_or_default(table);
+        let p = db_prefix(table.database.as_deref());
+        let sql = format!(
+            "SELECT kcu.COLUMN_NAME \
+             FROM {p}INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
+             JOIN {p}INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu \
+               ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
+             WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' \
+               AND tc.TABLE_SCHEMA = @P1 AND tc.TABLE_NAME = @P2 \
+             ORDER BY kcu.ORDINAL_POSITION"
+        );
         let rows = self
             .query_rows(
-                "SELECT kcu.COLUMN_NAME \
-                 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
-                 JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu \
-                   ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME \
-                 WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' \
-                   AND tc.TABLE_SCHEMA = @P1 AND tc.TABLE_NAME = @P2 \
-                 ORDER BY kcu.ORDINAL_POSITION",
+                &sql,
                 &[Value::String(schema), Value::String(table.name.clone())],
             )
             .await?;

@@ -29,7 +29,11 @@ pub trait Driver: Send + Sync {
     // ---- 스키마 지연 로딩 ----
     async fn list_databases(&self) -> Result<Vec<DatabaseInfo>>;
     async fn list_schemas(&self, database: Option<&str>) -> Result<Vec<SchemaInfo>>;
-    async fn list_tables(&self, schema: Option<&str>) -> Result<Vec<TableInfo>>;
+    async fn list_tables(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableInfo>>;
     async fn list_columns(&self, table: &TableRef) -> Result<Vec<ColumnInfo>>;
 
     /// 편집(UPDATE/DELETE)의 행 식별용 PK 컬럼.

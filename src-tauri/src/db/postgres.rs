@@ -153,7 +153,12 @@ impl Driver for PostgresDriver {
             .collect())
     }
 
-    async fn list_tables(&self, schema: Option<&str>) -> Result<Vec<TableInfo>> {
+    async fn list_tables(
+        &self,
+        _database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableInfo>> {
+        // PostgreSQL 은 연결당 1 DB 라 database 는 무시(스키마 기준).
         let schema = schema.unwrap_or("public").to_string();
         let rows = sqlx::query(
             "SELECT table_name, table_type FROM information_schema.tables \

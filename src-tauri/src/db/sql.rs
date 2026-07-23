@@ -26,12 +26,25 @@ pub enum LimitStyle {
     OffsetFetch,
 }
 
+/// 테이블 한정 방식.
+#[derive(Clone, Copy)]
+#[allow(clippy::enum_variant_names)] // …Table 접미사는 의도된 것
+pub enum Naming {
+    /// `"schema"."table"` (PG/SQLite) — database 무시
+    SchemaTable,
+    /// `[db].[schema].[table]` (SQL Server)
+    DbSchemaTable,
+    /// `` `db`.`table` `` (MySQL — database 가 곧 스키마)
+    DbTable,
+}
+
 #[derive(Clone, Copy)]
 pub struct Dialect {
     pub quote_open: char,
     pub quote_close: char,
     pub placeholder: Placeholder,
     pub limit_style: LimitStyle,
+    pub naming: Naming,
 }
 
 impl Dialect {
@@ -40,24 +53,28 @@ impl Dialect {
         quote_close: '"',
         placeholder: Placeholder::Numbered("$"),
         limit_style: LimitStyle::LimitOffset,
+        naming: Naming::SchemaTable,
     };
     pub const MYSQL: Dialect = Dialect {
         quote_open: '`',
         quote_close: '`',
         placeholder: Placeholder::Question,
         limit_style: LimitStyle::LimitOffset,
+        naming: Naming::DbTable,
     };
     pub const SQLITE: Dialect = Dialect {
         quote_open: '"',
         quote_close: '"',
         placeholder: Placeholder::Question,
         limit_style: LimitStyle::LimitOffset,
+        naming: Naming::SchemaTable,
     };
     pub const MSSQL: Dialect = Dialect {
         quote_open: '[',
         quote_close: ']',
         placeholder: Placeholder::Numbered("@P"),
         limit_style: LimitStyle::OffsetFetch,
+        naming: Naming::DbSchemaTable,
     };
 
     /// 식별자 quoting. 닫는 따옴표는 두 번 반복해 이스케이프.
@@ -66,13 +83,35 @@ impl Dialect {
         format!("{}{}{}", self.quote_open, esc, self.quote_close)
     }
 
-    /// 스키마 한정 테이블명.
+    /// database/schema 를 반영한 한정 테이블명.
     pub fn qualify(&self, t: &TableRef) -> String {
-        match &t.schema {
-            Some(s) if !s.is_empty() => {
-                format!("{}.{}", self.quote_ident(s), self.quote_ident(&t.name))
-            }
-            _ => self.quote_ident(&t.name),
+        let db = t.database.as_deref().filter(|s| !s.is_empty());
+        let schema = t.schema.as_deref().filter(|s| !s.is_empty());
+        let name = self.quote_ident(&t.name);
+        match self.naming {
+            Naming::DbSchemaTable => match (db, schema) {
+                (Some(d), Some(s)) => {
+                    format!("{}.{}.{}", self.quote_ident(d), self.quote_ident(s), name)
+                }
+                (Some(d), None) => {
+                    format!(
+                        "{}.{}.{}",
+                        self.quote_ident(d),
+                        self.quote_ident("dbo"),
+                        name
+                    )
+                }
+                (None, Some(s)) => format!("{}.{}", self.quote_ident(s), name),
+                (None, None) => name,
+            },
+            Naming::DbTable => match db.or(schema) {
+                Some(d) => format!("{}.{}", self.quote_ident(d), name),
+                None => name,
+            },
+            Naming::SchemaTable => match schema {
+                Some(s) => format!("{}.{}", self.quote_ident(s), name),
+                None => name,
+            },
         }
     }
 
@@ -290,6 +329,7 @@ mod tests {
         let req = FetchPageRequest {
             conn_id: "c".into(),
             table: TableRef {
+                database: None,
                 schema: Some("public".into()),
                 name: "users".into(),
             },
@@ -318,6 +358,7 @@ mod tests {
         let req = FetchPageRequest {
             conn_id: "c".into(),
             table: TableRef {
+                database: None,
                 schema: Some("dbo".into()),
                 name: "t".into(),
             },
@@ -340,6 +381,7 @@ mod tests {
         let b = build_update(
             &Dialect::SQLITE,
             &TableRef {
+                database: None,
                 schema: None,
                 name: "u".into(),
             },

@@ -1,66 +1,234 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, ChevronDown, Table2, Eye, Folder, Loader2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Database,
+  Eye,
+  Folder,
+  Loader2,
+  Table2,
+} from "lucide-react";
 import * as api from "../../api";
-import type { SchemaInfo, TableInfo } from "../../types";
+import type { DbKind, SchemaInfo, TableInfo } from "../../types";
+import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 
-interface Props {
+interface Ctx {
   connId: string;
   connName: string;
 }
 
-/** 연결 아래의 스키마/테이블을 지연 로딩으로 보여준다. */
-export function SchemaTree({ connId, connName }: Props) {
-  const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
-  const [rootTables, setRootTables] = useState<TableInfo[] | null>(null);
+/**
+ * 연결 아래의 계층을 DB 종류에 맞게 지연 로딩으로 보여준다.
+ * - SQL Server: 데이터베이스 → 스키마 → 테이블
+ * - MySQL/MariaDB: 데이터베이스 → 테이블
+ * - PostgreSQL: 스키마 → 테이블 (연결당 1 DB)
+ * - SQLite: 테이블
+ */
+export function SchemaTree({ connId, connName }: Ctx) {
+  const kind = useConnectionStore((s) => s.connections[connId]?.handle.kind);
+  if (kind === "mssql" || kind === "mysql") {
+    return <DatabaseList connId={connId} connName={connName} kind={kind} />;
+  }
+  return <RootSchemas connId={connId} connName={connName} />;
+}
+
+// ---------- 공용 ----------
+
+function Twisty({ open }: { open: boolean }) {
+  return (
+    <span className="tree-twisty">
+      {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+    </span>
+  );
+}
+
+function Loading({ depth }: { depth: number }) {
+  return (
+    <div className="tree-node" style={{ paddingLeft: depth * 14 }}>
+      <Loader2 size={13} className="spin" /> <span className="muted">로딩…</span>
+    </div>
+  );
+}
+
+// ---------- 데이터베이스 레벨 (mssql/mysql) ----------
+
+function DatabaseList({ connId, connName, kind }: Ctx & { kind: DbKind }) {
+  const [dbs, setDbs] = useState<string[] | null>(null);
   const toastError = useUiStore((s) => s.toastError);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const sc = await api.listSchemas(connId);
-        if (cancelled) return;
-        if (sc.length === 0) {
-          // 스키마 계층이 없는 DB(SQLite/MySQL): 테이블을 바로 로드.
-          setRootTables(await api.listTables(connId, null));
-          setSchemas([]);
-        } else {
-          setSchemas(sc);
+    api
+      .listDatabases(connId)
+      .then((d) => !cancelled && setDbs(d.map((x) => x.name)))
+      .catch((e) => {
+        if (!cancelled) {
+          toastError(e, "데이터베이스 목록 로드 실패");
+          setDbs([]);
         }
-      } catch (e) {
-        if (!cancelled) toastError(e, "스키마 로드 실패");
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
   }, [connId, toastError]);
 
-  if (schemas === null) {
-    return (
-      <div className="tree-node" style={{ paddingLeft: 24 }}>
-        <Loader2 size={13} className="spin" /> <span className="muted">로딩…</span>
-      </div>
-    );
-  }
+  if (dbs === null) return <Loading depth={1} />;
+  if (dbs.length === 0) return <div className="tree-empty">데이터베이스 없음</div>;
+  return (
+    <>
+      {dbs.map((db) => (
+        <DatabaseNode
+          key={db}
+          connId={connId}
+          connName={connName}
+          kind={kind}
+          database={db}
+        />
+      ))}
+    </>
+  );
+}
 
+function DatabaseNode({
+  connId,
+  connName,
+  kind,
+  database,
+}: Ctx & { kind: DbKind; database: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div
+        className="tree-node"
+        style={{ paddingLeft: 14 }}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Twisty open={open} />
+        <Database size={13} />
+        <span className="tree-label">{database}</span>
+      </div>
+      {open &&
+        (kind === "mssql" ? (
+          <SchemaList
+            connId={connId}
+            connName={connName}
+            database={database}
+            depth={2}
+          />
+        ) : (
+          <TableNodes
+            connId={connId}
+            connName={connName}
+            database={database}
+            schema={null}
+            depth={2}
+          />
+        ))}
+    </>
+  );
+}
+
+// ---------- 스키마 레벨 ----------
+
+function RootSchemas({ connId, connName }: Ctx) {
+  const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
+  const toastError = useUiStore((s) => s.toastError);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listSchemas(connId)
+      .then((s) => !cancelled && setSchemas(s))
+      .catch((e) => {
+        if (!cancelled) {
+          toastError(e, "스키마 로드 실패");
+          setSchemas([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, toastError]);
+
+  if (schemas === null) return <Loading depth={1} />;
+  // 스키마 계층이 없는 DB(SQLite): 테이블 직접.
   if (schemas.length === 0) {
     return (
-      <TableList
+      <TableNodes
         connId={connId}
         connName={connName}
-        tables={rootTables ?? []}
+        database={null}
+        schema={null}
         depth={1}
       />
     );
   }
-
   return (
     <>
       {schemas.map((s) => (
-        <SchemaNode key={s.name} connId={connId} connName={connName} schema={s.name} />
+        <SchemaNode
+          key={s.name}
+          connId={connId}
+          connName={connName}
+          database={null}
+          schema={s.name}
+          depth={1}
+        />
+      ))}
+    </>
+  );
+}
+
+function SchemaList({
+  connId,
+  connName,
+  database,
+  depth,
+}: Ctx & { database: string; depth: number }) {
+  const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
+  const toastError = useUiStore((s) => s.toastError);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listSchemas(connId, database)
+      .then((s) => !cancelled && setSchemas(s))
+      .catch((e) => {
+        if (!cancelled) {
+          toastError(e, "스키마 로드 실패");
+          setSchemas([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, database, toastError]);
+
+  if (schemas === null) return <Loading depth={depth} />;
+  if (schemas.length === 0) {
+    return (
+      <TableNodes
+        connId={connId}
+        connName={connName}
+        database={database}
+        schema={null}
+        depth={depth}
+      />
+    );
+  }
+  return (
+    <>
+      {schemas.map((s) => (
+        <SchemaNode
+          key={s.name}
+          connId={connId}
+          connName={connName}
+          database={database}
+          schema={s.name}
+          depth={depth}
+        />
       ))}
     </>
   );
@@ -69,72 +237,71 @@ export function SchemaTree({ connId, connName }: Props) {
 function SchemaNode({
   connId,
   connName,
+  database,
   schema,
-}: {
-  connId: string;
-  connName: string;
-  schema: string;
-}) {
+  depth,
+}: Ctx & { database: string | null; schema: string; depth: number }) {
   const [open, setOpen] = useState(false);
-  const [tables, setTables] = useState<TableInfo[] | null>(null);
-  const toastError = useUiStore((s) => s.toastError);
-
-  async function toggle() {
-    const next = !open;
-    setOpen(next);
-    if (next && tables === null) {
-      try {
-        setTables(await api.listTables(connId, schema));
-      } catch (e) {
-        toastError(e, "테이블 로드 실패");
-        setTables([]);
-      }
-    }
-  }
-
   return (
     <>
-      <div className="tree-node" style={{ paddingLeft: 12 }} onClick={toggle}>
-        <span className="tree-twisty">
-          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        </span>
+      <div
+        className="tree-node"
+        style={{ paddingLeft: depth * 14 }}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Twisty open={open} />
         <Folder size={13} />
         <span className="tree-label">{schema}</span>
       </div>
-      {open &&
-        (tables === null ? (
-          <div className="tree-node" style={{ paddingLeft: 40 }}>
-            <Loader2 size={13} className="spin" />
-          </div>
-        ) : (
-          <TableList
-            connId={connId}
-            connName={connName}
-            tables={tables}
-            depth={2}
-            schema={schema}
-          />
-        ))}
+      {open && (
+        <TableNodes
+          connId={connId}
+          connName={connName}
+          database={database}
+          schema={schema}
+          depth={depth + 1}
+        />
+      )}
     </>
   );
 }
 
-function TableList({
+// ---------- 테이블 레벨 ----------
+
+function TableNodes({
   connId,
   connName,
-  tables,
-  depth,
+  database,
   schema,
-}: {
-  connId: string;
-  connName: string;
-  tables: TableInfo[];
-  depth: number;
-  schema?: string;
-}) {
+  depth,
+}: Ctx & { database: string | null; schema: string | null; depth: number }) {
+  const [tables, setTables] = useState<TableInfo[] | null>(null);
+  const toastError = useUiStore((s) => s.toastError);
   const openTable = useWorkspaceStore((s) => s.openTable);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listTables(connId, database, schema)
+      .then((t) => !cancelled && setTables(t))
+      .catch((e) => {
+        if (!cancelled) {
+          toastError(e, "테이블 로드 실패");
+          setTables([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, database, schema, toastError]);
+
+  if (tables === null) return <Loading depth={depth} />;
   if (tables.length === 0) {
-    return <div className="tree-empty" style={{ paddingLeft: depth * 12 + 12 }}>테이블 없음</div>;
+    return (
+      <div className="tree-empty" style={{ paddingLeft: depth * 14 + 8 }}>
+        테이블 없음
+      </div>
+    );
   }
   return (
     <>
@@ -142,9 +309,13 @@ function TableList({
         <div
           key={t.name}
           className="tree-node"
-          style={{ paddingLeft: depth * 12 + 12 }}
+          style={{ paddingLeft: depth * 14 }}
           onDoubleClick={() =>
-            openTable(connId, connName, { schema: t.schema ?? schema ?? null, name: t.name })
+            openTable(connId, connName, {
+              database: database ?? null,
+              schema: t.schema ?? schema ?? null,
+              name: t.name,
+            })
           }
           title="더블클릭하여 열기"
         >

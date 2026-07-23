@@ -20,7 +20,7 @@ export interface QueryTab {
 export type Tab = TableTab | QueryTab;
 
 function tableKey(connId: string, table: TableRef): string {
-  return `${connId}:${table.schema ?? ""}.${table.name}`;
+  return `${connId}:${table.database ?? ""}.${table.schema ?? ""}.${table.name}`;
 }
 
 interface WorkspaceState {

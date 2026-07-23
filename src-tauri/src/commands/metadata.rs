@@ -35,13 +35,14 @@ pub async fn list_schemas(
 pub async fn list_tables(
     state: tauri::State<'_, AppState>,
     conn_id: String,
+    database: Option<String>,
     schema: Option<String>,
 ) -> Result<Vec<TableInfo>> {
     state
         .get(&conn_id)
         .await?
         .as_driver()
-        .list_tables(schema.as_deref())
+        .list_tables(database.as_deref(), schema.as_deref())
         .await
 }
 
