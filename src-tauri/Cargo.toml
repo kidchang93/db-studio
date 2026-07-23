@@ -1,6 +1,6 @@
 [package]
 name = "db-studio"
-version = "0.1.2"
+version = "0.1.3"
 description = "DataGrip 스타일 크로스플랫폼 DB 클라이언트"
 authors = ["kidchang"]
 edition = "2021"

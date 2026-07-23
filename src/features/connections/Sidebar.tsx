@@ -33,6 +33,7 @@ export function Sidebar() {
   const [dialog, setDialog] = useState<{ profile: ConnectionProfile | null } | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pwPrompt, setPwPrompt] = useState<ConnectionProfile | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ConnectionProfile | null>(null);
 
   useEffect(() => {
     loadProfiles();
@@ -157,7 +158,7 @@ export function Sidebar() {
                     title="삭제"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm(`'${p.name}' 프로필을 삭제할까요?`)) handleDelete(p);
+                      setDeleteTarget(p);
                     }}
                   >
                     <Trash2 size={13} />
@@ -184,6 +185,38 @@ export function Sidebar() {
             handleConnect(p, pw);
           }}
         />
+      )}
+
+      {deleteTarget && (
+        <Modal
+          title="연결 삭제"
+          onClose={() => setDeleteTarget(null)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setDeleteTarget(null)}>
+                취소
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => {
+                  const p = deleteTarget;
+                  setDeleteTarget(null);
+                  handleDelete(p);
+                }}
+              >
+                삭제
+              </button>
+            </>
+          }
+        >
+          <p style={{ margin: 0 }}>
+            <b>{deleteTarget.name}</b> 연결을 삭제할까요?
+          </p>
+          <p className="muted" style={{ marginBottom: 0 }}>
+            저장된 프로필과 키체인 비밀번호가 삭제됩니다. 실제 데이터베이스에는
+            영향을 주지 않습니다.
+          </p>
+        </Modal>
       )}
     </div>
   );
