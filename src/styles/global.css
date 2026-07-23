@@ -386,6 +386,46 @@ select {
   color: var(--text-faint);
   letter-spacing: 0.5px;
 }
+/* 자동완성 팝업의 기준이 되는 래퍼 */
+.where-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+/* WHERE 컬럼 자동완성 후보 */
+.ac-popup {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+  min-width: 180px;
+  max-width: 320px;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+}
+.ac-popup li {
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ac-popup li:hover {
+  background: var(--bg-hover);
+}
+.ac-popup li.active {
+  background: var(--accent);
+  color: var(--accent-text);
+}
 .where-input {
   flex: 1;
   min-width: 0;
@@ -472,6 +512,42 @@ table.grid tr.new-row td {
 /* 셀 커서(클릭·키보드 공통) — 트리의 .tree-cursor 와 같은 역할 */
 table.grid td.cell-cursor {
   box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* 툴바: 기능 묶음 구분선과 커서 위치 표시 */
+.toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--border);
+}
+.cursor-pos {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 값 뷰어 — 그리드에서 잘리는 긴 값을 전체로 펼쳐 본다 */
+.value-view {
+  margin: 0;
+  min-height: 80px;
+  max-height: min(60vh, 480px);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+.value-view.null {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.value-meta {
+  font-size: 11px;
+  align-self: center;
 }
 /* 커서로 위치를 표시하므로 컨테이너 자체 포커스 링은 감춘다 */
 .grid-scroll:focus,
