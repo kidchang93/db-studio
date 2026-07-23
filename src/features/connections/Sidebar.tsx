@@ -38,16 +38,84 @@ export function Sidebar() {
   const [pwPrompt, setPwPrompt] = useState<ConnectionProfile | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConnectionProfile | null>(null);
   const [filter, setFilter] = useState("");
+  const [matchCount, setMatchCount] = useState(0);
+  const [matchIdx, setMatchIdx] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+  const matchIdxRef = useRef(0);
+
+  /** 현재 트리에 그려진 일치 항목들(DOM 순서 = 화면 순서). */
+  function getMatches(): HTMLElement[] {
+    const root = treeRef.current;
+    if (!root) return [];
+    return Array.from(root.querySelectorAll<HTMLElement>('[data-match="1"]'));
+  }
+
+  /** idx 번째 일치 항목을 현재 위치로 표시하고 화면에 보이게 스크롤. */
+  function focusMatch(idx: number) {
+    const list = getMatches();
+    list.forEach((el) => el.classList.remove("current-match"));
+    setMatchCount(list.length);
+    if (list.length === 0) return;
+    const i = ((idx % list.length) + list.length) % list.length;
+    matchIdxRef.current = i;
+    setMatchIdx(i);
+    const el = list[i];
+    el.classList.add("current-match");
+    el.scrollIntoView({ block: "nearest" });
+  }
+
+  /** 현재 일치 항목 실행: 테이블이면 열고, DB/스키마면 펼치기. */
+  function activateCurrent() {
+    const el = getMatches()[matchIdxRef.current];
+    if (!el) return;
+    const type = el.getAttribute("data-kind") === "table" ? "dblclick" : "click";
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+  }
+
+  /** 검색 이동 키 처리. 처리했으면 true. */
+  function handleNavKey(e: KeyboardEvent): boolean {
+    if (e.key === "ArrowDown") {
+      focusMatch(matchIdxRef.current + 1);
+      e.preventDefault();
+      return true;
+    }
+    if (e.key === "ArrowUp") {
+      focusMatch(matchIdxRef.current - 1);
+      e.preventDefault();
+      return true;
+    }
+    if (e.key === "Enter") {
+      activateCurrent();
+      e.preventDefault();
+      return true;
+    }
+    if (e.key === "Escape") {
+      setFilter("");
+      return true;
+    }
+    return false;
+  }
+
+  // 검색어가 바뀌면 첫 일치 항목으로 이동(렌더 후).
+  useEffect(() => {
+    matchIdxRef.current = 0;
+    const t = setTimeout(() => {
+      if (!filter) {
+        getMatches().forEach((el) => el.classList.remove("current-match"));
+        setMatchCount(0);
+        return;
+      }
+      focusMatch(0);
+    }, 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
 
   // IntelliJ speed-search: 트리에 포커스가 있을 때 문자를 입력하면 검색창으로 넘긴다.
   function onTreeKeyDown(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return;
-    if (e.key === "Escape") {
-      setFilter("");
-      return;
-    }
+    if (handleNavKey(e)) return;
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
       setFilter((f) => f + e.key);
       searchRef.current?.focus();
@@ -98,15 +166,16 @@ export function Sidebar() {
         <input
           ref={searchRef}
           className="tree-search-input"
-          placeholder="검색 (트리에서 바로 타이핑)"
+          placeholder="검색 (↑↓ 이동 · Enter 열기)"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setFilter("");
-            // Enter: 입력을 마치고 트리로 포커스를 넘긴다.
-            else if (e.key === "Enter") treeRef.current?.focus();
-          }}
+          onKeyDown={handleNavKey}
         />
+        {filter && (
+          <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+            {matchCount > 0 ? `${matchIdx + 1}/${matchCount}` : "0"}
+          </span>
+        )}
         {filter && (
           <button className="btn icon" title="지우기" onClick={() => setFilter("")}>
             <X size={13} />

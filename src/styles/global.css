@@ -292,6 +292,11 @@ select {
   border-radius: 2px;
   padding: 0 1px;
 }
+/* 현재 이동해 있는 검색 결과 */
+.tree-node.current-match {
+  background: var(--bg-active);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
 /* ===== 탭 ===== */
 .tabbar {

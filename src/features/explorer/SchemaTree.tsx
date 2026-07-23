@@ -105,10 +105,13 @@ function DatabaseNode({
   database,
 }: Ctx & { kind: DbKind; database: string }) {
   const [open, setOpen] = useState(false);
+  const filter = useTreeFilter();
   return (
     <>
       <div
         className="tree-node"
+        data-match={filter && matches(database, filter) ? "1" : undefined}
+        data-kind="database"
         style={{ paddingLeft: 14 }}
         onClick={() => setOpen((o) => !o)}
       >
@@ -251,10 +254,13 @@ function SchemaNode({
   depth,
 }: Ctx & { database: string | null; schema: string; depth: number }) {
   const [open, setOpen] = useState(false);
+  const filter = useTreeFilter();
   return (
     <>
       <div
         className="tree-node"
+        data-match={filter && matches(schema, filter) ? "1" : undefined}
+        data-kind="schema"
         style={{ paddingLeft: depth * 14 }}
         onClick={() => setOpen((o) => !o)}
       >
@@ -315,20 +321,15 @@ function TableNodes({
       </div>
     );
   }
-  const shown = tables.filter((t) => matches(t.name, filter));
-  if (shown.length === 0) {
-    return (
-      <div className="tree-empty" style={{ paddingLeft: depth * 14 + 8 }}>
-        일치하는 테이블 없음
-      </div>
-    );
-  }
+  // 검색해도 항목을 숨기지 않는다. 일치 항목만 표시(data-match)하고 강조한다.
   return (
     <>
-      {shown.map((t) => (
+      {tables.map((t) => (
         <div
           key={t.name}
           className="tree-node"
+          data-match={filter && matches(t.name, filter) ? "1" : undefined}
+          data-kind="table"
           style={{ paddingLeft: depth * 14 }}
           onDoubleClick={() =>
             openTable(connId, connName, {
