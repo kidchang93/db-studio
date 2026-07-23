@@ -6,7 +6,12 @@
     <title>DB Studio</title>
   </head>
 
-  <body>
+  <!--
+    OS 텍스트 자동 교정을 앱 전체에서 끈다. macOS 는 입력 첫 글자를 대문자로 바꾸고
+    ' 를 ‘ 로 치환하는데, SQL·식별자·호스트명이 조용히 망가진다.
+    autocapitalize/spellcheck 는 하위로 상속되므로 여기 한 번만 지정한다.
+  -->
+  <body autocapitalize="none" autocorrect="off" spellcheck="false">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

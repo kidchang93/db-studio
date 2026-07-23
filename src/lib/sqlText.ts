@@ -10,6 +10,18 @@
  * 문자열 리터럴 안에서 유니코드 따옴표 자체를 검색하려는 경우는 함께 치환되지만,
  * 그 값은 어차피 SQL 문법을 깨뜨리므로 정규화가 항상 안전한 쪽이다.
  */
+/**
+ * OS 자동 교정(첫 글자 대문자화·스마트 인용부호)을 끄는 입력 속성 묶음.
+ *
+ * `index.html` 의 body 에도 지정해 두었지만 `autocorrect` 는 비표준 속성이라
+ * 상속이 보장되지 않는다. SQL·식별자가 직접 들어가는 입력에는 이 묶음을 펼쳐 준다.
+ */
+export const rawTextInputProps = {
+  autoCapitalize: "none",
+  autoCorrect: "off",
+  spellCheck: false,
+} as const;
+
 export function normalizeSmartQuotes(input: string): string {
   return input
     .replace(/[‘’‚‛′]/g, "'")

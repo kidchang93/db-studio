@@ -28,6 +28,7 @@ import {
 } from "../../store/connectionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { DB_META, type ConnectionProfile } from "../../types";
+import { rawTextInputProps } from "../../lib/sqlText";
 
 export function Sidebar() {
   const profiles = useConnectionStore((s) => s.profiles);
@@ -230,6 +231,7 @@ export function Sidebar() {
         <Search size={13} className="muted" />
         <input
           ref={searchRef}
+          {...rawTextInputProps}
           className="tree-search-input"
           placeholder="검색 (↑↓ 이동 · Enter 열기)"
           value={filter}

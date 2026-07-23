@@ -1,5 +1,5 @@
 import { useState } from "react";
-import CodeMirror from "@uiw/react-codemirror";
+import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { Play, ScrollText } from "lucide-react";
@@ -95,7 +95,15 @@ export function QueryTab({ connId }: { connId: string }) {
                 theme={oneDark}
                 height="100%"
                 style={{ height: "100%", fontSize: 13 }}
-                extensions={[sql({ dialect: dialectFor(kind) })]}
+                extensions={[
+                  sql({ dialect: dialectFor(kind) }),
+                  // 에디터 본문(contenteditable)에도 OS 자동 교정을 끈다.
+                  EditorView.contentAttributes.of({
+                    autocapitalize: "none",
+                    autocorrect: "off",
+                    spellcheck: "false",
+                  }),
+                ]}
                 // WHERE 필터 바와 같은 이유로 스마트 인용부호를 ASCII 로 되돌린다.
                 onChange={(v) => setText(normalizeSmartQuotes(v))}
               />

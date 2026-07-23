@@ -11,11 +11,13 @@ import {
   ArrowUp,
   Ban,
   Check,
+  Columns3,
   Copy,
   Eye,
   Plus,
   RefreshCw,
   RotateCcw,
+  Table as TableIcon,
   Trash2,
   X,
 } from "lucide-react";
@@ -30,7 +32,8 @@ import type {
 } from "../../types";
 import { useUiStore } from "../../store/uiStore";
 import { Modal } from "../../components/Modal";
-import { normalizeSmartQuotes } from "../../lib/sqlText";
+import { StructureView } from "./StructureView";
+import { normalizeSmartQuotes, rawTextInputProps } from "../../lib/sqlText";
 
 interface Props {
   connId: string;
@@ -104,6 +107,8 @@ export function DataGridTab({ connId, table }: Props) {
   const [inserts, setInserts] = useState<InsertRow[]>([]);
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const [editing, setEditing] = useState<{ row: number | string; col: string } | null>(null);
+  /** 데이터 그리드 / 컬럼 구조 중 무엇을 보고 있는지. */
+  const [view, setView] = useState<"data" | "structure">("data");
   /** 클릭·키보드로 이동하는 셀 커서(행 인덱스, 컬럼 인덱스). 트리의 tree-cursor 와 같은 역할. */
   const [cursor, setCursor] = useState<{ row: number; col: number } | null>(null);
   /** 값 뷰어로 펼쳐 보는 셀. 그리드 셀은 잘려 보이므로 전체 값을 따로 띄운다. */
@@ -472,9 +477,22 @@ export function DataGridTab({ connId, table }: Props) {
 
   const totalRows = page?.totalRows ?? null;
 
+  if (view === "structure") {
+    return (
+      <div className="grid-tab">
+        <div className="grid-toolbar">
+          <ViewToggle view={view} onChange={setView} />
+        </div>
+        <StructureView connId={connId} table={table} />
+      </div>
+    );
+  }
+
   return (
     <div className="grid-tab">
       <div className="grid-toolbar">
+        <ViewToggle view={view} onChange={setView} />
+        <span className="toolbar-sep" />
         <button className="btn sm" onClick={load} disabled={loading} title="새로고침">
           <RefreshCw size={13} /> 새로고침
         </button>
@@ -571,6 +589,7 @@ export function DataGridTab({ connId, table }: Props) {
         <div className="where-field">
           <input
             ref={whereRef}
+            {...rawTextInputProps}
             className="where-input mono"
             placeholder="예) id > 100 AND name LIKE '%kim%'   —  Tab 컬럼 완성 · Enter 적용"
             value={whereDraft}
@@ -785,6 +804,38 @@ export function DataGridTab({ connId, table }: Props) {
   );
 }
 
+/** 데이터 / 구조 뷰 전환. 같은 테이블 안에서 보는 대상만 바꾼다. */
+function ViewToggle({
+  view,
+  onChange,
+}: {
+  view: "data" | "structure";
+  onChange: (v: "data" | "structure") => void;
+}) {
+  return (
+    <div className="seg" role="tablist">
+      <button
+        role="tab"
+        aria-selected={view === "data"}
+        className={view === "data" ? "active" : ""}
+        onClick={() => onChange("data")}
+        title="테이블 데이터"
+      >
+        <TableIcon size={12} /> 데이터
+      </button>
+      <button
+        role="tab"
+        aria-selected={view === "structure"}
+        className={view === "structure" ? "active" : ""}
+        onClick={() => onChange("structure")}
+        title="컬럼 구조 — 이름·타입·PK·기본값"
+      >
+        <Columns3 size={12} /> 구조
+      </button>
+    </div>
+  );
+}
+
 /** 셀 값 전체를 펼쳐 보는 패널. 그리드에서는 값이 잘려 보이기 때문에 따로 띄운다. */
 function ValueViewer({
   column,
@@ -891,6 +942,7 @@ function CellEditor({
 
   return (
     <input
+      {...rawTextInputProps}
       className="cell-input"
       type={inputType}
       step={isDate ? 1 : undefined}
