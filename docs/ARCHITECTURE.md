@@ -124,6 +124,9 @@ profiles ◄── commands (연결 저장/로드 시)
 | Windows | `.msi`, `.exe`(NSIS) + `.sig` | CI: `tauri-action` (matrix `windows-latest`) |
 
 - `v*` 태그 푸시 → 양 OS 빌드·서명·릴리스 자동 수행. 로컬 `npm run tauri build` 는 서명 없는 단발 빌드용.
+- **릴리스는 2단계**다. `build` 잡이 각 OS 산출물을 **draft** 릴리스로 올리고, `publish` 잡이 `latest.json` 의 각 플랫폼 서명이 실제 업로드된 `.sig` 파일과 일치하는지 검증한 뒤에야 draft 를 해제한다. draft 릴리스는 `/releases/latest/download/` 로 노출되지 않으므로, 검증에 실패한 아티팩트는 업데이터에 도달하지 않는다.
+  - 워크플로에는 `concurrency`(그룹 `release-<ref>`, 취소 안 함)를 걸어 같은 태그의 중복 실행을 순차화한다. 병렬 실행 시 두 실행의 산출물이 섞여 `latest.json` 의 서명과 실제 자산이 어긋난다(v0.1.8 macOS 업데이트 실패의 원인). 태그를 다시 푸시할 때는 앞선 실행이 끝난 뒤에 하는 것이 안전하다.
+  - macOS 업데이터 자산 `DB.Studio_universal.app.tar.gz` 는 **파일명에 버전이 없어** 재실행 시 조용히 덮어써진다. 위 두 장치가 이 덮어쓰기로 인한 서명 불일치를 막는 안전장치다.
 - **자동 업데이트**: 앱은 시작 시 `plugins.updater.endpoints`(GitHub Releases의 `latest.json`)를 확인한다. 새 버전이 있으면 상태바에 업데이트 버튼을 띄우고, `downloadAndInstall` → `relaunch` 로 교체한다.
   - 업데이트 무결성은 **minisign** 서명으로 검증한다: 공개키는 `tauri.conf.json`(`plugins.updater.pubkey`), 개인키는 CI 시크릿(`TAURI_SIGNING_PRIVATE_KEY` + `..._PASSWORD`). OS 코드서명과는 별개.
   - 프론트: `src/lib/updater.ts`(check/install 래퍼) + `src/store/updateStore.ts`(상태) + `StatusBar` UI. 백엔드: `tauri-plugin-updater` + `tauri-plugin-process`(재시작), 데스크톱 한정 등록.

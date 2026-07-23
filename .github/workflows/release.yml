@@ -7,8 +7,15 @@ on:
       - "v*"
   workflow_dispatch:
 
+# 같은 태그로 워크플로가 중복 실행되면 두 실행의 산출물이 섞여 latest.json 의 서명과
+# 실제 업로드된 자산이 어긋난다(v0.1.8 macOS 업데이트 실패의 원인).
+# 취소하지 않고 순차 실행시켜, 뒤 실행이 앞 실행의 최종 latest.json 위에 병합하게 한다.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  build:
     permissions:
       contents: write # 릴리스 생성/자산 업로드
     strategy:
@@ -65,6 +72,55 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "DB Studio ${{ github.ref_name }}"
           releaseBody: "자산(Assets)에서 설치 파일을 내려받으세요. 설치된 앱은 이후 자동으로 업데이트됩니다."
-          releaseDraft: false
+          # draft 로 올려 두고, publish 잡의 서명 검증을 통과해야 공개한다.
+          # draft 릴리스는 /releases/latest/download/ 로 노출되지 않으므로
+          # 검증 전 아티팩트가 업데이터에 도달하지 않는다.
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # 업데이터가 실제로 쓰는 latest.json 이 릴리스에 올라간 .sig 와 일치하는지 확인한 뒤에만 공개한다.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 릴리스 draft 해제
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: 업데이터 자산 내려받기
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p 'latest.json' -p '*.sig' -D verify
+
+      - name: latest.json 서명 정합성 검증
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          from urllib.parse import unquote
+
+          d = pathlib.Path("verify")
+          data = json.loads((d / "latest.json").read_text())
+          tag = os.environ["TAG"]
+          errors = []
+
+          if data["version"] != tag.lstrip("v"):
+              errors.append(f'latest.json version={data["version"]} 이 태그 {tag} 와 다름')
+
+          for name, p in data["platforms"].items():
+              url = p["url"]
+              if f"/download/{tag}/" not in url:
+                  errors.append(f"{name}: url 이 {tag} 가 아닌 다른 릴리스를 가리킴 -> {url}")
+              sig = d / (unquote(url.rsplit("/", 1)[-1]) + ".sig")
+              if not sig.exists():
+                  errors.append(f"{name}: 서명 파일 없음 ({sig.name})")
+              elif sig.read_text().strip() != p["signature"].strip():
+                  errors.append(f"{name}: latest.json 서명이 {sig.name} 과 불일치 (중복 실행으로 자산이 섞였을 수 있음)")
+
+          if errors:
+              print("업데이터 아티팩트 검증 실패:", *errors, sep="\n  - ")
+              sys.exit(1)
+          print(f"플랫폼 {len(data['platforms'])}개 서명 정합성 확인 완료")
+          PY
+
+      - name: 릴리스 공개
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

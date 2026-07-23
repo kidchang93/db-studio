@@ -15,6 +15,9 @@ dist-ssr
 # 업데이터 서명 개인키 — 절대 커밋 금지 (개인키는 ~/.tauri 및 GitHub Secrets 에만)
 *.key
 
+# Claude Code 로컬 개인 설정 (공유 설정 .claude/settings.json 은 커밋 대상)
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
