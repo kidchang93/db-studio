@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -79,6 +86,9 @@ export function DataGridTab({ connId, table }: Props) {
   const [inserts, setInserts] = useState<InsertRow[]>([]);
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const [editing, setEditing] = useState<{ row: number | string; col: string } | null>(null);
+  /** 클릭·키보드로 이동하는 셀 커서(행 인덱스, 컬럼 인덱스). 트리의 tree-cursor 와 같은 역할. */
+  const [cursor, setCursor] = useState<{ row: number; col: number } | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   const columns = page?.result.columns ?? [];
   const rows = page?.result.rows ?? [];
@@ -112,6 +122,7 @@ export function DataGridTab({ connId, table }: Props) {
       setInserts([]);
       setSelection(new Set());
       setEditing(null);
+      setCursor(null);
       ui.setStatus(
         `${table.name}: ${p.result.rows.length}행 표시` +
           (p.totalRows != null ? ` / 전체 ${p.totalRows}행` : "") +
@@ -245,6 +256,83 @@ export function DataGridTab({ connId, table }: Props) {
     }
   }
 
+  /** 셀 커서를 표 범위 안으로 눌러 이동시킨다. */
+  function moveCursor(row: number, col: number) {
+    setCursor({
+      row: Math.max(0, Math.min(rows.length - 1, row)),
+      col: Math.max(0, Math.min(columns.length - 1, col)),
+    });
+  }
+
+  /** 클릭한 셀을 커서로 삼고 그리드에 포커스를 준다(이후 방향키가 바로 먹도록). */
+  function focusCell(row: number, col: number) {
+    setCursor({ row, col });
+    gridRef.current?.focus();
+  }
+
+  /** 그리드 키보드 조작: 방향키 이동, Enter/F2 편집, Space 행 선택. */
+  function onGridKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    // 셀 편집 중에는 에디터(input)가 키를 처리한다.
+    if (e.target instanceof HTMLInputElement) return;
+    if (rows.length === 0 || columns.length === 0) return;
+    const NAV = [
+      "ArrowDown",
+      "ArrowUp",
+      "ArrowRight",
+      "ArrowLeft",
+      "Home",
+      "End",
+      "Enter",
+      "F2",
+      " ",
+    ];
+    if (!NAV.includes(e.key)) return;
+    e.preventDefault();
+
+    // 커서가 아직 없으면 첫 셀부터 시작한다.
+    if (!cursor) {
+      setCursor({ row: 0, col: 0 });
+      return;
+    }
+    switch (e.key) {
+      case "ArrowDown":
+        moveCursor(cursor.row + 1, cursor.col);
+        break;
+      case "ArrowUp":
+        moveCursor(cursor.row - 1, cursor.col);
+        break;
+      case "ArrowRight":
+        moveCursor(cursor.row, cursor.col + 1);
+        break;
+      case "ArrowLeft":
+        moveCursor(cursor.row, cursor.col - 1);
+        break;
+      case "Home":
+        moveCursor(cursor.row, 0);
+        break;
+      case "End":
+        moveCursor(cursor.row, columns.length - 1);
+        break;
+      case "Enter":
+      case "F2":
+        if (editable && !deleted.has(cursor.row)) {
+          setEditing({ row: cursor.row, col: columns[cursor.col].name });
+        }
+        break;
+      case " ":
+        if (editable) toggleRowSelect(cursor.row);
+        break;
+    }
+  }
+
+  // 커서가 보이는 영역 밖으로 나가면 따라 스크롤한다.
+  useEffect(() => {
+    if (!cursor) return;
+    gridRef.current
+      ?.querySelector<HTMLElement>("td.cell-cursor")
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [cursor]);
+
   const totalRows = page?.totalRows ?? null;
 
   return (
@@ -355,7 +443,12 @@ export function DataGridTab({ connId, table }: Props) {
         </div>
       )}
 
-      <div className="grid-scroll">
+      <div
+        className="grid-scroll"
+        ref={gridRef}
+        tabIndex={0}
+        onKeyDown={onGridKeyDown}
+      >
         <table className="grid">
           <thead>
             <tr>
@@ -389,7 +482,7 @@ export function DataGridTab({ connId, table }: Props) {
                   <td className="rownum" onClick={() => editable && toggleRowSelect(rowIdx)}>
                     {offset + rowIdx + 1}
                   </td>
-                  {columns.map((c) => {
+                  {columns.map((c, colIdx) => {
                     const val = cellValue(rowIdx, c.name);
                     const isEditingCell =
                       editing?.row === rowIdx && editing?.col === c.name;
@@ -399,7 +492,11 @@ export function DataGridTab({ connId, table }: Props) {
                         className={[
                           val === null ? "null" : "",
                           isDirty(rowIdx, c.name) ? "dirty" : "",
+                          cursor?.row === rowIdx && cursor?.col === colIdx
+                            ? "cell-cursor"
+                            : "",
                         ].join(" ")}
+                        onClick={() => focusCell(rowIdx, colIdx)}
                         onDoubleClick={() =>
                           editable && !isDel && setEditing({ row: rowIdx, col: c.name })
                         }
@@ -411,8 +508,12 @@ export function DataGridTab({ connId, table }: Props) {
                             onCommit={(raw) => {
                               setExistingCell(rowIdx, c.name, coerce(raw, c.logicalType));
                               setEditing(null);
+                              gridRef.current?.focus(); // 편집 후 방향키가 계속 먹도록
                             }}
-                            onCancel={() => setEditing(null)}
+                            onCancel={() => {
+                              setEditing(null);
+                              gridRef.current?.focus();
+                            }}
                           />
                         ) : (
                           displayValue(val)

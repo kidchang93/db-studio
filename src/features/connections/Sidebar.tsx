@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -148,6 +154,29 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
+  /**
+   * 마우스로 행을 클릭해도 키보드와 같은 위치에 커서를 둔다.
+   * 클릭 직후 방향키를 바로 쓸 수 있도록 트리에 포커스도 넘긴다.
+   */
+  function onTreeClick(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    // 행 안의 액션 버튼(연결/편집/삭제)은 자기 동작만 하고 포커스를 가져가지 않는다.
+    if (target.closest("button, input")) return;
+    const el = target.closest<HTMLElement>(".tree-node");
+    if (!el) return;
+
+    const list = navItems();
+    if (list.includes(el)) {
+      setCursor(el, list);
+    } else {
+      // 검색 중 일치하지 않는 행을 클릭한 경우: 강조만 옮기고 n/m 카운터는 그대로 둔다.
+      cursorRef.current?.classList.remove("tree-cursor");
+      el.classList.add("tree-cursor");
+      cursorRef.current = el;
+    }
+    treeRef.current?.focus();
+  }
+
   // IntelliJ speed-search: 트리에 포커스가 있을 때 문자를 입력하면 검색창으로 넘긴다.
   function onTreeKeyDown(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return;
@@ -220,7 +249,13 @@ export function Sidebar() {
       </div>
 
       <TreeFilterContext.Provider value={filter}>
-      <div className="tree" ref={treeRef} tabIndex={0} onKeyDown={onTreeKeyDown}>
+      <div
+        className="tree"
+        ref={treeRef}
+        tabIndex={0}
+        onKeyDown={onTreeKeyDown}
+        onClick={onTreeClick}
+      >
         {profiles.length === 0 && (
           <div className="tree-empty">
             연결이 없습니다.

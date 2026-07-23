@@ -469,6 +469,15 @@ table.grid td.dirty {
 table.grid tr.new-row td {
   background: var(--new-row);
 }
+/* 셀 커서(클릭·키보드 공통) — 트리의 .tree-cursor 와 같은 역할 */
+table.grid td.cell-cursor {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+/* 커서로 위치를 표시하므로 컨테이너 자체 포커스 링은 감춘다 */
+.grid-scroll:focus,
+.grid-scroll:focus-visible {
+  outline: none;
+}
 table.grid tr.del-row td {
   background: var(--del-row);
   text-decoration: line-through;
