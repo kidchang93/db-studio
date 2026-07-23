@@ -42,71 +42,107 @@ export function Sidebar() {
   const [matchIdx, setMatchIdx] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
-  const matchIdxRef = useRef(0);
+  const cursorRef = useRef<HTMLElement | null>(null);
 
-  /** 현재 트리에 그려진 일치 항목들(DOM 순서 = 화면 순서). */
-  function getMatches(): HTMLElement[] {
+  /**
+   * 키보드 이동 대상 행들(DOM 순서 = 화면 순서).
+   * 검색 중이면 일치 항목만, 아니면 트리의 모든 행.
+   */
+  function navItems(): HTMLElement[] {
     const root = treeRef.current;
     if (!root) return [];
-    return Array.from(root.querySelectorAll<HTMLElement>('[data-match="1"]'));
+    const sel = filter ? '[data-match="1"]' : ".tree-node";
+    return Array.from(root.querySelectorAll<HTMLElement>(sel));
   }
 
-  /** idx 번째 일치 항목을 현재 위치로 표시하고 화면에 보이게 스크롤. */
-  function focusMatch(idx: number) {
-    const list = getMatches();
-    list.forEach((el) => el.classList.remove("current-match"));
+  /** 커서를 el 로 옮기고 강조 + 화면에 보이게 스크롤. */
+  function setCursor(el: HTMLElement, list: HTMLElement[]) {
+    cursorRef.current?.classList.remove("tree-cursor");
+    list.forEach((x) => x.classList.remove("tree-cursor"));
+    el.classList.add("tree-cursor");
+    cursorRef.current = el;
+    el.scrollIntoView({ block: "nearest" });
+    setMatchIdx(list.indexOf(el));
+    setMatchCount(list.length);
+  }
+
+  /** 현재 커서에서 delta 만큼 이동(순환). */
+  function moveBy(delta: number) {
+    const list = navItems();
     setMatchCount(list.length);
     if (list.length === 0) return;
-    const i = ((idx % list.length) + list.length) % list.length;
-    matchIdxRef.current = i;
-    setMatchIdx(i);
-    const el = list[i];
-    el.classList.add("current-match");
-    el.scrollIntoView({ block: "nearest" });
+    const cur = cursorRef.current ? list.indexOf(cursorRef.current) : -1;
+    const next = cur < 0 ? 0 : cur + delta;
+    setCursor(list[((next % list.length) + list.length) % list.length], list);
   }
 
-  /** 현재 일치 항목 실행: 테이블이면 열고, DB/스키마면 펼치기. */
-  function activateCurrent() {
-    const el = getMatches()[matchIdxRef.current];
-    if (!el) return;
-    const type = el.getAttribute("data-kind") === "table" ? "dblclick" : "click";
+  function cursorEl(): HTMLElement | null {
+    const list = navItems();
+    const el = cursorRef.current;
+    return el && list.includes(el) ? el : (list[0] ?? null);
+  }
+
+  function fire(el: HTMLElement, type: "click" | "dblclick") {
     el.dispatchEvent(new MouseEvent(type, { bubbles: true }));
   }
 
-  /** 검색 이동 키 처리. 처리했으면 true. */
+  /** 현재 행 실행: 테이블이면 열고, 그 외에는 펼치기/접기. */
+  function activateCurrent() {
+    const el = cursorEl();
+    if (!el) return;
+    fire(el, el.getAttribute("data-kind") === "table" ? "dblclick" : "click");
+  }
+
+  /** 트리 키보드 조작. 처리했으면 true. */
   function handleNavKey(e: KeyboardEvent): boolean {
-    if (e.key === "ArrowDown") {
-      focusMatch(matchIdxRef.current + 1);
-      e.preventDefault();
-      return true;
+    switch (e.key) {
+      case "ArrowDown":
+        moveBy(1);
+        e.preventDefault();
+        return true;
+      case "ArrowUp":
+        moveBy(-1);
+        e.preventDefault();
+        return true;
+      case "ArrowRight": {
+        // 닫힌 폴더면 펼치고, 이미 열려 있으면 아래로 이동.
+        const el = cursorEl();
+        if (el?.getAttribute("data-open") === "0") fire(el, "click");
+        else moveBy(1);
+        e.preventDefault();
+        return true;
+      }
+      case "ArrowLeft": {
+        // 열린 폴더면 접고, 아니면 위로 이동.
+        const el = cursorEl();
+        if (el?.getAttribute("data-open") === "1") fire(el, "click");
+        else moveBy(-1);
+        e.preventDefault();
+        return true;
+      }
+      case "Enter":
+        activateCurrent();
+        e.preventDefault();
+        return true;
+      case "Escape":
+        setFilter("");
+        return true;
+      default:
+        return false;
     }
-    if (e.key === "ArrowUp") {
-      focusMatch(matchIdxRef.current - 1);
-      e.preventDefault();
-      return true;
-    }
-    if (e.key === "Enter") {
-      activateCurrent();
-      e.preventDefault();
-      return true;
-    }
-    if (e.key === "Escape") {
-      setFilter("");
-      return true;
-    }
-    return false;
   }
 
   // 검색어가 바뀌면 첫 일치 항목으로 이동(렌더 후).
   useEffect(() => {
-    matchIdxRef.current = 0;
     const t = setTimeout(() => {
+      const list = navItems();
+      setMatchCount(list.length);
       if (!filter) {
-        getMatches().forEach((el) => el.classList.remove("current-match"));
-        setMatchCount(0);
+        cursorRef.current?.classList.remove("tree-cursor");
+        cursorRef.current = null;
         return;
       }
-      focusMatch(0);
+      if (list.length > 0) setCursor(list[0], list);
     }, 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -200,6 +236,8 @@ export function Sidebar() {
             <div key={p.id}>
               <div
                 className="tree-node"
+                data-kind="connection"
+                data-open={connId ? (expanded[p.id] ? "1" : "0") : undefined}
                 onClick={() => {
                   if (connId) setExpanded((e) => ({ ...e, [p.id]: !e[p.id] }));
                 }}

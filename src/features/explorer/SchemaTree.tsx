@@ -112,6 +112,7 @@ function DatabaseNode({
         className="tree-node"
         data-match={filter && matches(database, filter) ? "1" : undefined}
         data-kind="database"
+        data-open={open ? "1" : "0"}
         style={{ paddingLeft: 14 }}
         onClick={() => setOpen((o) => !o)}
       >
@@ -261,6 +262,7 @@ function SchemaNode({
         className="tree-node"
         data-match={filter && matches(schema, filter) ? "1" : undefined}
         data-kind="schema"
+        data-open={open ? "1" : "0"}
         style={{ paddingLeft: depth * 14 }}
         onClick={() => setOpen((o) => !o)}
       >

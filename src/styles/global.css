@@ -292,8 +292,8 @@ select {
   border-radius: 2px;
   padding: 0 1px;
 }
-/* 현재 이동해 있는 검색 결과 */
-.tree-node.current-match {
+/* 키보드 커서(현재 행) */
+.tree-node.tree-cursor {
   background: var(--bg-active);
   box-shadow: inset 2px 0 0 var(--accent);
 }
