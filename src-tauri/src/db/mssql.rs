@@ -486,9 +486,16 @@ impl Driver for MssqlDriver {
             }
         }
 
-        let empty: Vec<&dyn ToSql> = Vec::new();
         let mut guard = self.client.lock().await;
-        guard.execute("BEGIN TRANSACTION", &empty).await?;
+        // 트랜잭션 제어문은 반드시 배치로 직접 보낸다. tiberius 의 `execute` 는 sp_executesql
+        // 로 감싸 실행하는데, 그 안에서 BEGIN TRANSACTION 을 하면 프로시저 스코프를 벗어날 때
+        // @@TRANCOUNT 가 어긋나 오류 266 이 난다(그리고 트랜잭션이 세션에 남는다).
+        // DML 은 값 바인딩이 필요하므로 sp_executesql 경로를 그대로 쓴다 — 바깥 트랜잭션에 참여한다.
+        guard
+            .simple_query("BEGIN TRANSACTION")
+            .await?
+            .into_results()
+            .await?;
 
         let mut res = ApplyChangesResult::default();
         for (kind, b) in &ops {
@@ -504,12 +511,15 @@ impl Driver for MssqlDriver {
                     }
                 }
                 Err(e) => {
-                    let _ = guard.execute("ROLLBACK", &empty).await;
+                    // 롤백도 배치로. 실패하더라도 원래 오류를 그대로 올린다.
+                    if let Ok(s) = guard.simple_query("ROLLBACK").await {
+                        let _ = s.into_results().await;
+                    }
                     return Err(e.into());
                 }
             }
         }
-        guard.execute("COMMIT", &empty).await?;
+        guard.simple_query("COMMIT").await?.into_results().await?;
         Ok(res)
     }
 
@@ -544,6 +554,7 @@ impl Driver for MssqlDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn test_config() -> ConnectionConfig {
         ConnectionConfig {
@@ -632,6 +643,55 @@ mod tests {
         );
 
         assert_eq!(page.expect("fetch_page 성공").result.rows.len(), 2);
+    }
+
+    /// 커밋(apply_changes)이 트랜잭션을 세션에 남기지 않는지 확인한다.
+    /// 트랜잭션 제어문을 sp_executesql 로 보내면 @@TRANCOUNT 가 어긋나 오류 266 이 났었다.
+    #[tokio::test]
+    #[ignore]
+    async fn apply_changes_commits_without_leaking_transaction() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.tx_test') IS NOT NULL DROP TABLE dbo.tx_test")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.tx_test (id INT PRIMARY KEY, name NVARCHAR(50))")
+            .await
+            .expect("create");
+
+        let table = TableRef {
+            database: Some("master".into()),
+            schema: Some("dbo".into()),
+            name: "tx_test".into(),
+        };
+
+        // 같은 커넥션에서 두 번 연속 커밋해야 트랜잭션 누수를 잡을 수 있다.
+        for i in 1..=2 {
+            let mut values = BTreeMap::new();
+            values.insert("id".to_string(), Value::from(i));
+            values.insert("name".to_string(), Value::from(format!("row{i}")));
+            let res = d
+                .apply_changes(&ApplyChangesRequest {
+                    conn_id: "t".into(),
+                    table: table.clone(),
+                    edits: vec![RowEdit::Insert { values }],
+                })
+                .await
+                .unwrap_or_else(|e| panic!("{i}번째 커밋 실패: {e}"));
+            assert_eq!(res.inserted, 1);
+
+            let trancount = d
+                .simple_rows("SELECT @@TRANCOUNT AS n")
+                .await
+                .expect("trancount");
+            let n: i32 = trancount[0].try_get::<i32, _>("n").unwrap().unwrap();
+            assert_eq!(n, 0, "{i}번째 커밋 후 트랜잭션이 남아 있다");
+        }
+
+        let rows = d
+            .simple_rows("SELECT COUNT(*) AS c FROM dbo.tx_test")
+            .await
+            .unwrap();
+        assert_eq!(rows[0].try_get::<i32, _>("c").unwrap().unwrap(), 2);
     }
 
     /// macOS 스마트 인용부호(U+2018)가 섞인 조건은 SQL Server 가 구문 오류(102)로 거부한다.
