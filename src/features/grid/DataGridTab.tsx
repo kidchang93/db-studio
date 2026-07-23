@@ -111,6 +111,11 @@ export function DataGridTab({ connId, table }: Props) {
   const [view, setView] = useState<"data" | "structure">("data");
   /** 클릭·키보드로 이동하는 셀 커서(행 인덱스, 컬럼 인덱스). 트리의 tree-cursor 와 같은 역할. */
   const [cursor, setCursor] = useState<{ row: number; col: number } | null>(null);
+  /**
+   * 범위 선택의 고정점. Shift 없이 움직이면 커서를 따라오고,
+   * Shift 를 누른 채 움직이면 여기 남아서 anchor~cursor 사각 영역이 선택된다.
+   */
+  const [anchor, setAnchor] = useState<{ row: number; col: number } | null>(null);
   /** 값 뷰어로 펼쳐 보는 셀. 그리드 셀은 잘려 보이므로 전체 값을 따로 띄운다. */
   const [viewer, setViewer] = useState<{ row: number; col: number } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -128,6 +133,21 @@ export function DataGridTab({ connId, table }: Props) {
 
   const pendingCount =
     Object.keys(edits).length + deleted.size + inserts.length;
+
+  /** anchor~cursor 가 만드는 선택 사각형(양끝 포함). 단일 셀이면 1×1. */
+  const range = useMemo(() => {
+    if (!cursor || !anchor) return null;
+    return {
+      r1: Math.min(anchor.row, cursor.row),
+      r2: Math.max(anchor.row, cursor.row),
+      c1: Math.min(anchor.col, cursor.col),
+      c2: Math.max(anchor.col, cursor.col),
+    };
+  }, [cursor, anchor]);
+
+  /** 두 칸 이상 선택됐을 때만 범위를 칠한다(1×1 은 커서 테두리로 충분). */
+  const multiRange =
+    range && (range.r1 !== range.r2 || range.c1 !== range.c2) ? range : null;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -148,6 +168,7 @@ export function DataGridTab({ connId, table }: Props) {
       setSelection(new Set());
       setEditing(null);
       setCursor(null);
+      setAnchor(null);
       ui.setStatus(
         `${table.name}: ${p.result.rows.length}행 표시` +
           (p.totalRows != null ? ` / 전체 ${p.totalRows}행` : "") +
@@ -360,7 +381,7 @@ export function DataGridTab({ connId, table }: Props) {
     }
   }
 
-  /** 선택된 행이 있으면 그 행들을 TSV 로, 없으면 커서 셀 값을 복사한다. */
+  /** 행 선택이 있으면 그 행들을, 없으면 선택된 셀 범위를 TSV 로 복사한다. */
   function copyCurrent() {
     if (selection.size > 0) {
       const idxs = [...selection].sort((a, b) => a - b);
@@ -370,21 +391,38 @@ export function DataGridTab({ connId, table }: Props) {
       copyText(tsv, `${idxs.length}개 행`);
       return;
     }
-    if (!cursor) return;
-    copyText(clipText(cellValue(cursor.row, columns[cursor.col].name)), "셀 값");
+    if (!range) return;
+    const lines: string[] = [];
+    for (let r = range.r1; r <= range.r2; r++) {
+      const cells: string[] = [];
+      for (let c = range.c1; c <= range.c2; c++) {
+        cells.push(clipText(cellValue(r, columns[c].name)));
+      }
+      lines.push(cells.join("\t"));
+    }
+    const n = (range.r2 - range.r1 + 1) * (range.c2 - range.c1 + 1);
+    copyText(lines.join("\n"), n === 1 ? "셀 값" : `셀 ${n}개`);
   }
 
-  /** 셀 커서를 표 범위 안으로 눌러 이동시킨다. */
-  function moveCursor(row: number, col: number) {
-    setCursor({
+  /**
+   * 셀 커서를 표 범위 안으로 눌러 이동시킨다.
+   * `extend` 가 true(Shift 조합)면 anchor 를 남겨 범위를 넓히고, 아니면 anchor 를 끌고 온다.
+   */
+  function moveCursor(row: number, col: number, extend = false) {
+    const next = {
       row: Math.max(0, Math.min(rows.length - 1, row)),
       col: Math.max(0, Math.min(columns.length - 1, col)),
-    });
+    };
+    setCursor(next);
+    if (!extend) setAnchor(next);
+    else if (!anchor) setAnchor(cursor ?? next);
   }
 
   /** 클릭한 셀을 커서로 삼고 그리드에 포커스를 준다(이후 방향키가 바로 먹도록). */
-  function focusCell(row: number, col: number) {
+  function focusCell(row: number, col: number, extend = false) {
     setCursor({ row, col });
+    if (!extend) setAnchor({ row, col });
+    else if (!anchor) setAnchor(cursor ?? { row, col });
     gridRef.current?.focus();
   }
 
@@ -409,8 +447,17 @@ export function DataGridTab({ connId, table }: Props) {
     if (e.target instanceof HTMLInputElement || viewer) return;
     if (rows.length === 0 || columns.length === 0) return;
 
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
+    const mod = e.metaKey || e.ctrlKey;
+
+    if (mod && e.key.toLowerCase() === "c") {
       copyCurrent();
+      e.preventDefault();
+      return;
+    }
+    // ⌘/Ctrl+A: 표 전체 선택
+    if (mod && e.key.toLowerCase() === "a") {
+      setAnchor({ row: 0, col: 0 });
+      setCursor({ row: rows.length - 1, col: columns.length - 1 });
       e.preventDefault();
       return;
     }
@@ -430,27 +477,33 @@ export function DataGridTab({ connId, table }: Props) {
 
     // 커서가 아직 없으면 첫 셀부터 시작한다.
     if (!cursor) {
-      setCursor({ row: 0, col: 0 });
+      moveCursor(0, 0);
       return;
     }
+    // Shift 는 선택 확장, ⌘/Ctrl 은 그 방향 끝까지 점프(엑셀·DataGrip 과 동일).
+    const ext = e.shiftKey;
+    const lastRow = rows.length - 1;
+    const lastCol = columns.length - 1;
+
     switch (e.key) {
       case "ArrowDown":
-        moveCursor(cursor.row + 1, cursor.col);
+        moveCursor(mod ? lastRow : cursor.row + 1, cursor.col, ext);
         break;
       case "ArrowUp":
-        moveCursor(cursor.row - 1, cursor.col);
+        moveCursor(mod ? 0 : cursor.row - 1, cursor.col, ext);
         break;
       case "ArrowRight":
-        moveCursor(cursor.row, cursor.col + 1);
+        moveCursor(cursor.row, mod ? lastCol : cursor.col + 1, ext);
         break;
       case "ArrowLeft":
-        moveCursor(cursor.row, cursor.col - 1);
+        moveCursor(cursor.row, mod ? 0 : cursor.col - 1, ext);
         break;
       case "Home":
-        moveCursor(cursor.row, 0);
+        // Home 은 행의 처음, ⌘/Ctrl+Home 은 표의 첫 셀.
+        moveCursor(mod ? 0 : cursor.row, 0, ext);
         break;
       case "End":
-        moveCursor(cursor.row, columns.length - 1);
+        moveCursor(mod ? lastRow : cursor.row, lastCol, ext);
         break;
       case "Enter":
       case "F2":
@@ -545,7 +598,11 @@ export function DataGridTab({ connId, table }: Props) {
 
         {cursor && columns[cursor.col] && (
           <span className="muted mono cursor-pos">
-            {offset + cursor.row + 1}행 · {columns[cursor.col].name}
+            {multiRange
+              ? `${multiRange.r2 - multiRange.r1 + 1}행 × ${
+                  multiRange.c2 - multiRange.c1 + 1
+                }열 선택`
+              : `${offset + cursor.row + 1}행 · ${columns[cursor.col].name}`}
           </span>
         )}
 
@@ -702,8 +759,16 @@ export function DataGridTab({ connId, table }: Props) {
                           cursor?.row === rowIdx && cursor?.col === colIdx
                             ? "cell-cursor"
                             : "",
+                          multiRange &&
+                          rowIdx >= multiRange.r1 &&
+                          rowIdx <= multiRange.r2 &&
+                          colIdx >= multiRange.c1 &&
+                          colIdx <= multiRange.c2
+                            ? "in-range"
+                            : "",
                         ].join(" ")}
-                        onClick={() => focusCell(rowIdx, colIdx)}
+                        // Shift+클릭이면 현재 anchor 에서 여기까지 범위로 잡는다.
+                        onClick={(e) => focusCell(rowIdx, colIdx, e.shiftKey)}
                         onDoubleClick={() =>
                           editable && !isDel && setEditing({ row: rowIdx, col: c.name })
                         }
