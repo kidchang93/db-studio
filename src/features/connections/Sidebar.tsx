@@ -456,19 +456,21 @@ export function Sidebar() {
                   </button>
                 )}
                 <span className="spacer" />
+                {connId && (
+                  <button
+                    className="btn icon console-btn"
+                    title="SQL 콘솔 열기"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openQuery(connId, p.name);
+                    }}
+                  >
+                    <Terminal size={13} />
+                  </button>
+                )}
                 <span className="node-actions">
                   {connId ? (
                     <>
-                      <button
-                        className="btn icon"
-                        title="SQL 콘솔"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openQuery(connId, p.name);
-                        }}
-                      >
-                        <Terminal size={13} />
-                      </button>
                       <button
                         className="btn icon"
                         title="연결 해제"
