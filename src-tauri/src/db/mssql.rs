@@ -25,6 +25,16 @@ type TdsClient = Client<Compat<TcpStream>>;
 
 pub struct MssqlDriver {
     client: Mutex<TdsClient>,
+    /// 재연결에 필요한 접속 설정.
+    ///
+    /// sqlx 드라이버들은 풀이 끊긴 커넥션을 알아서 되살리지만 tiberius 는 단일 연결이라
+    /// 직접 다시 열어야 한다. 유휴 상태에서 서버·방화벽이 TCP 를 끊는 일이 흔하다.
+    config: ConnectionConfig,
+}
+
+/// 연결이 끊겨서 난 오류인지(재연결로 복구 가능한지).
+fn is_connection_lost(e: &tiberius::error::Error) -> bool {
+    matches!(e, tiberius::error::Error::Io { .. })
 }
 
 /// tiberius 바인딩용 파라미터 래퍼.
@@ -201,6 +211,15 @@ fn schema_or_default(table: &TableRef) -> String {
 
 impl MssqlDriver {
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
+        let client = Self::open(config).await?;
+        Ok(Self {
+            client: Mutex::new(client),
+            config: config.clone(),
+        })
+    }
+
+    /// 실제 TDS 연결을 연다. 최초 접속과 재연결이 같은 경로를 쓴다.
+    async fn open(config: &ConnectionConfig) -> Result<TdsClient> {
         let host = config
             .host
             .clone()
@@ -244,22 +263,39 @@ impl MssqlDriver {
 
         let tcp = TcpStream::connect(cfg.get_addr()).await?;
         tcp.set_nodelay(true)?;
-        let client = Client::connect(cfg, tcp.compat_write()).await?;
-        Ok(Self {
-            client: Mutex::new(client),
-        })
+        Ok(Client::connect(cfg, tcp.compat_write()).await?)
     }
 
     async fn query_rows(&self, sql: &str, params: &[Value]) -> Result<Vec<TdsRow>> {
         let pv: Vec<P> = params.iter().map(to_param).collect();
         let refs: Vec<&dyn ToSql> = pv.iter().map(|p| p as &dyn ToSql).collect();
         let mut guard = self.client.lock().await;
+        // 결과를 먼저 확정해 스트림의 빌림을 끊는다(그래야 아래에서 guard 를 교체할 수 있다).
+        let first = match guard.query(sql, &refs).await {
+            Ok(s) => Some(s.into_first_result().await?),
+            Err(e) if is_connection_lost(&e) => None,
+            Err(e) => return Err(e.into()),
+        };
+        if let Some(rows) = first {
+            return Ok(rows);
+        }
+        // 조회는 부작용이 없으므로 다시 연결해 한 번 재시도한다.
+        *guard = Self::open(&self.config).await?;
         let rows = guard.query(sql, &refs).await?.into_first_result().await?;
         Ok(rows)
     }
 
     async fn simple_rows(&self, sql: &str) -> Result<Vec<TdsRow>> {
         let mut guard = self.client.lock().await;
+        let first = match guard.simple_query(sql).await {
+            Ok(s) => Some(s.into_first_result().await?),
+            Err(e) if is_connection_lost(&e) => None,
+            Err(e) => return Err(e.into()),
+        };
+        if let Some(rows) = first {
+            return Ok(rows);
+        }
+        *guard = Self::open(&self.config).await?;
         let rows = guard.simple_query(sql).await?.into_first_result().await?;
         Ok(rows)
     }
@@ -491,11 +527,23 @@ impl Driver for MssqlDriver {
         // 로 감싸 실행하는데, 그 안에서 BEGIN TRANSACTION 을 하면 프로시저 스코프를 벗어날 때
         // @@TRANCOUNT 가 어긋나 오류 266 이 난다(그리고 트랜잭션이 세션에 남는다).
         // DML 은 값 바인딩이 필요하므로 sp_executesql 경로를 그대로 쓴다 — 바깥 트랜잭션에 참여한다.
-        guard
-            .simple_query("BEGIN TRANSACTION")
-            .await?
-            .into_results()
-            .await?;
+        // BEGIN 이 실패하면 아직 아무것도 반영되지 않았으므로, 끊긴 경우 안전하게 다시 연결한다.
+        let begun = match guard.simple_query("BEGIN TRANSACTION").await {
+            Ok(s) => {
+                s.into_results().await?;
+                true
+            }
+            Err(e) if is_connection_lost(&e) => false,
+            Err(e) => return Err(e.into()),
+        };
+        if !begun {
+            *guard = Self::open(&self.config).await?;
+            guard
+                .simple_query("BEGIN TRANSACTION")
+                .await?
+                .into_results()
+                .await?;
+        }
 
         let mut res = ApplyChangesResult::default();
         for (kind, b) in &ops {
@@ -571,7 +619,19 @@ impl Driver for MssqlDriver {
         let start = Instant::now();
         let empty: Vec<&dyn ToSql> = Vec::new();
         let mut guard = self.client.lock().await;
-        let er = guard.execute(sql, &empty).await?;
+        // 쓰기는 재시도하지 않는다 — 이미 반영됐는지 알 수 없어 중복 적용 위험이 있다.
+        // 연결만 되살려 다음 시도가 되게 하고, 사용자에게 상황을 알린다.
+        let er = match guard.execute(sql, &empty).await {
+            Ok(er) => er,
+            Err(e) if is_connection_lost(&e) => {
+                *guard = Self::open(&self.config).await?;
+                return Err(AppError::Connection(
+                    "실행 도중 연결이 끊어졌습니다. 다시 연결했으니 반영 여부를 확인한 뒤 재시도하세요"
+                        .into(),
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        };
         Ok(ExecResult {
             rows_affected: er.total(),
             elapsed_ms: start.elapsed().as_millis() as u64,
