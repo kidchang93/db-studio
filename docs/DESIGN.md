@@ -49,7 +49,21 @@
 - **커밋**: `apply_changes`가 하나의 트랜잭션에서 delete→update→insert 순으로 실행, 실패 시 전체 롤백.
 - **되돌리기**: 커밋 전 pending은 로컬에서 취소 가능. 커밋 후 되돌리기는 범위 밖.
 - PK 없는 테이블: 읽기 전용 그리드로 표시하고 편집 UI 비활성 + 사유 안내.
-  - **향후 과제 — 테이블 구조 변경(Table Modify)**: PK 가 없어 읽기 전용이 되는 테이블이 실제로 존재하므로, 그리드에서 PK 를 지정할 수 있는 DDL 변경 기능을 추가한다. `ALTER TABLE` 은 되돌리기 어려운 조작이라 생성될 DDL 을 미리 보여주고 명시적으로 확인받는 절차를 둔다.
+
+### 테이블 구조 변경 (Table Modify)
+
+PK 가 없어 읽기 전용이 되는 테이블을 구제하기 위해 **구조 뷰에서 기본 키를 지정**할 수 있다.
+
+- **2단계 계약**: `plan_primary_key`(계획·검증, 실행 안 함) → 사용자 확인 → `apply_primary_key`(재검증 후 실행). `ALTER TABLE` 은 되돌릴 수 없으므로 실행될 SQL 을 그대로 보여준 뒤에만 적용한다.
+- **사전 검증을 서버에서 한다**: 대상 컬럼의 NULL 건수와 값 조합 중복을 실제 데이터로 세어 `blockers` 에 담는다. DB 가 뱉는 제약 위반 오류보다 먼저, 어떤 컬럼이 왜 안 되는지 한국어로 알려주기 위함. `warnings` 는 막지는 않지만 알려야 할 변경(예: NOT NULL 전환).
+- **미리보기와 실행 사이에 데이터가 바뀔 수 있으므로** `apply` 는 계획을 다시 세워 `blockers` 가 비었을 때만 DDL 을 실행한다.
+- **DB 차이는 `Dialect::pk_style`(`PkStyle`)에 가둔다** — 드라이버나 command 에 분기를 두지 않는다.
+  | 방식 | DB | DDL |
+  |------|-----|-----|
+  | `AddPrimaryKey` | PostgreSQL · MySQL | `ALTER TABLE … ADD PRIMARY KEY (…)` (NULL→NOT NULL 은 DB 가 처리) |
+  | `AlterThenConstraint` | SQL Server | nullable 컬럼을 `ALTER COLUMN … NOT NULL` 로 바꾼 뒤 명명 제약 추가 |
+  | `Unsupported` | SQLite | 기존 테이블에 PK 추가 불가(테이블 재생성 필요) → `blockers` 로 안내 |
+- 검증·DDL 생성 로직은 `Driver` 트레이트의 **기본 구현**으로 두어 드라이버 4곳에 중복되지 않게 한다. 드라이버는 `dialect()` 만 제공한다.
 
 ## 7. 오류 처리
 

@@ -26,6 +26,18 @@ pub enum LimitStyle {
     OffsetFetch,
 }
 
+/// 기존 테이블에 기본 키를 추가하는 방식.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PkStyle {
+    /// `ALTER TABLE t ADD PRIMARY KEY (...)` — NULL 컬럼은 DB 가 알아서 NOT NULL 로 바꾼다.
+    /// (PostgreSQL, MySQL)
+    AddPrimaryKey,
+    /// 컬럼을 먼저 NOT NULL 로 바꾼 뒤 명명된 제약을 추가한다. (SQL Server)
+    AlterThenConstraint,
+    /// 기존 테이블에 추가할 수 없다(테이블 재생성 필요). (SQLite)
+    Unsupported,
+}
+
 /// 테이블 한정 방식.
 #[derive(Clone, Copy)]
 #[allow(clippy::enum_variant_names)] // …Table 접미사는 의도된 것
@@ -45,6 +57,7 @@ pub struct Dialect {
     pub placeholder: Placeholder,
     pub limit_style: LimitStyle,
     pub naming: Naming,
+    pub pk_style: PkStyle,
 }
 
 impl Dialect {
@@ -54,6 +67,7 @@ impl Dialect {
         placeholder: Placeholder::Numbered("$"),
         limit_style: LimitStyle::LimitOffset,
         naming: Naming::SchemaTable,
+        pk_style: PkStyle::AddPrimaryKey,
     };
     pub const MYSQL: Dialect = Dialect {
         quote_open: '`',
@@ -61,6 +75,7 @@ impl Dialect {
         placeholder: Placeholder::Question,
         limit_style: LimitStyle::LimitOffset,
         naming: Naming::DbTable,
+        pk_style: PkStyle::AddPrimaryKey,
     };
     pub const SQLITE: Dialect = Dialect {
         quote_open: '"',
@@ -68,6 +83,7 @@ impl Dialect {
         placeholder: Placeholder::Question,
         limit_style: LimitStyle::LimitOffset,
         naming: Naming::SchemaTable,
+        pk_style: PkStyle::Unsupported,
     };
     pub const MSSQL: Dialect = Dialect {
         quote_open: '[',
@@ -75,6 +91,7 @@ impl Dialect {
         placeholder: Placeholder::Numbered("@P"),
         limit_style: LimitStyle::OffsetFetch,
         naming: Naming::DbSchemaTable,
+        pk_style: PkStyle::AlterThenConstraint,
     };
 
     /// 식별자 quoting. 닫는 따옴표는 두 번 반복해 이스케이프.
@@ -217,6 +234,80 @@ pub fn build_fetch(d: &Dialect, req: &FetchPageRequest) -> Built {
     }
 
     Built { sql, params }
+}
+
+/// 기본 키 추가 DDL. 방언별 차이는 [`PkStyle`] 에 가둬 둔다.
+///
+/// `cols` 는 대상 테이블의 컬럼 메타(NOT NULL 변환에 원본 타입이 필요한 방언이 있다).
+/// 지원하지 않는 방언이면 빈 목록을 돌려주고, 사유는 호출부가 [`PkStyle`] 로 판단한다.
+pub fn build_set_primary_key(
+    d: &Dialect,
+    table: &TableRef,
+    columns: &[String],
+    cols: &[ColumnInfo],
+) -> Result<Vec<String>> {
+    if columns.is_empty() {
+        return Err(AppError::Validation(
+            "기본 키로 지정할 컬럼을 선택하세요".into(),
+        ));
+    }
+    let qtable = d.qualify(table);
+    let cols_sql = columns
+        .iter()
+        .map(|c| d.quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Ok(match d.pk_style {
+        PkStyle::Unsupported => Vec::new(),
+        PkStyle::AddPrimaryKey => {
+            vec![format!("ALTER TABLE {qtable} ADD PRIMARY KEY ({cols_sql})")]
+        }
+        PkStyle::AlterThenConstraint => {
+            // SQL Server 는 PK 컬럼이 이미 NOT NULL 이어야 하므로 먼저 바꾼다.
+            let mut out = Vec::new();
+            for name in columns {
+                let meta = cols.iter().find(|c| &c.name == name).ok_or_else(|| {
+                    AppError::Validation(format!("컬럼 '{name}' 을 찾을 수 없습니다"))
+                })?;
+                if meta.nullable {
+                    out.push(format!(
+                        "ALTER TABLE {qtable} ALTER COLUMN {} {} NOT NULL",
+                        d.quote_ident(name),
+                        meta.db_type
+                    ));
+                }
+            }
+            // 제약 이름은 테이블명 기반으로 만든다(식별자 규칙상 quoting 필요).
+            let pk_name = d.quote_ident(&format!("PK_{}", table.name));
+            out.push(format!(
+                "ALTER TABLE {qtable} ADD CONSTRAINT {pk_name} PRIMARY KEY ({cols_sql})"
+            ));
+            out
+        }
+    })
+}
+
+/// PK 후보 컬럼에 NULL 이 몇 건 있는지 세는 SELECT.
+pub fn build_null_count(d: &Dialect, table: &TableRef, column: &str) -> String {
+    format!(
+        "SELECT COUNT(*) FROM {} WHERE {} IS NULL",
+        d.qualify(table),
+        d.quote_ident(column)
+    )
+}
+
+/// PK 후보 조합이 중복되는 그룹 수를 세는 SELECT(0 이어야 PK 로 쓸 수 있다).
+pub fn build_duplicate_count(d: &Dialect, table: &TableRef, columns: &[String]) -> String {
+    let cols_sql = columns
+        .iter()
+        .map(|c| d.quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT COUNT(*) FROM (SELECT {cols_sql} FROM {} GROUP BY {cols_sql} HAVING COUNT(*) > 1) AS dup_check",
+        d.qualify(table)
+    )
 }
 
 /// 필터 조건에 맞는 전체 행 수 COUNT.
@@ -417,6 +508,84 @@ mod tests {
                 .sql
                 .contains("(con_code like 'A0018%')"));
         }
+    }
+
+    fn col(name: &str, ty: &str, nullable: bool) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            db_type: ty.into(),
+            logical_type: LogicalType::Int,
+            nullable,
+            is_primary_key: false,
+            default: None,
+            ordinal: 1,
+        }
+    }
+
+    fn t(name: &str) -> TableRef {
+        TableRef {
+            database: None,
+            schema: Some("dbo".into()),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn pk_ddl_per_dialect() {
+        let cols = vec![col("id", "INT", true), col("sub", "INT", false)];
+        let want = vec!["id".to_string()];
+
+        // PG/MySQL: 한 문장. NULL 은 DB 가 알아서 NOT NULL 로 바꾼다.
+        let pg = build_set_primary_key(&Dialect::POSTGRES, &t("u"), &want, &cols).unwrap();
+        assert_eq!(pg, vec![r#"ALTER TABLE "dbo"."u" ADD PRIMARY KEY ("id")"#]);
+
+        // SQL Server: nullable 컬럼을 먼저 NOT NULL 로 바꾸고 명명 제약을 붙인다.
+        let ms = build_set_primary_key(&Dialect::MSSQL, &t("u"), &want, &cols).unwrap();
+        assert_eq!(
+            ms,
+            vec![
+                "ALTER TABLE [dbo].[u] ALTER COLUMN [id] INT NOT NULL".to_string(),
+                "ALTER TABLE [dbo].[u] ADD CONSTRAINT [PK_u] PRIMARY KEY ([id])".to_string(),
+            ]
+        );
+
+        // 이미 NOT NULL 인 컬럼은 ALTER COLUMN 을 만들지 않는다.
+        let ms2 =
+            build_set_primary_key(&Dialect::MSSQL, &t("u"), &["sub".to_string()], &cols).unwrap();
+        assert_eq!(ms2.len(), 1, "불필요한 ALTER COLUMN 이 섞였다: {ms2:?}");
+
+        // SQLite 는 지원하지 않으므로 빈 목록.
+        assert!(
+            build_set_primary_key(&Dialect::SQLITE, &t("u"), &want, &cols)
+                .unwrap()
+                .is_empty()
+        );
+
+        // 컬럼 미선택은 검증 오류.
+        assert!(build_set_primary_key(&Dialect::POSTGRES, &t("u"), &[], &cols).is_err());
+    }
+
+    #[test]
+    fn pk_ddl_composite_and_quoting() {
+        let cols = vec![col("a", "INT", false), col(r#"we"ird"#, "INT", false)];
+        let want = vec!["a".to_string(), r#"we"ird"#.to_string()];
+        let pg = build_set_primary_key(&Dialect::POSTGRES, &t("u"), &want, &cols).unwrap();
+        assert_eq!(
+            pg,
+            vec![r#"ALTER TABLE "dbo"."u" ADD PRIMARY KEY ("a", "we""ird")"#]
+        );
+    }
+
+    #[test]
+    fn pk_validation_queries() {
+        assert_eq!(
+            build_null_count(&Dialect::POSTGRES, &t("u"), "id"),
+            r#"SELECT COUNT(*) FROM "dbo"."u" WHERE "id" IS NULL"#
+        );
+        // 중복 검사는 서브쿼리 별칭이 있어야 MySQL/SQL Server 에서 동작한다.
+        let dup = build_duplicate_count(&Dialect::MYSQL, &t("u"), &["a".into(), "b".into()]);
+        assert!(dup.contains("GROUP BY `a`, `b`"), "{dup}");
+        assert!(dup.contains("AS dup_check"), "{dup}");
     }
 
     #[test]

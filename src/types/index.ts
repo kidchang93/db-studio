@@ -93,6 +93,23 @@ export interface ColumnInfo {
   ordinal: number;
 }
 
+/** 기본 키 지정 요청 (Rust: SetPrimaryKeyRequest). */
+export interface SetPrimaryKeyRequest {
+  connId: string;
+  table: TableRef;
+  columns: string[];
+}
+
+/** 기본 키 지정 계획 — DDL 미리보기 + 사전 검증 (Rust: PrimaryKeyPlan). */
+export interface PrimaryKeyPlan {
+  /** 실행될 SQL(순서대로). */
+  statements: string[];
+  /** 비어 있어야 적용할 수 있다. */
+  blockers: string[];
+  /** 막지는 않지만 알려야 할 사항. */
+  warnings: string[];
+}
+
 export interface ColumnMeta {
   name: string;
   dbType: string;

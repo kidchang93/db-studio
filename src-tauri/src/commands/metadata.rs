@@ -59,3 +59,31 @@ pub async fn list_columns(
         .list_columns(&table)
         .await
 }
+
+/// 기본 키 지정 계획(DDL 미리보기 + 사전 검증). 실행하지 않는다.
+#[tauri::command]
+pub async fn plan_primary_key(
+    state: tauri::State<'_, AppState>,
+    req: SetPrimaryKeyRequest,
+) -> Result<PrimaryKeyPlan> {
+    state
+        .get(&req.conn_id)
+        .await?
+        .as_driver()
+        .plan_primary_key(&req.table, &req.columns)
+        .await
+}
+
+/// 계획을 재검증한 뒤 기본 키 DDL 을 실행한다.
+#[tauri::command]
+pub async fn apply_primary_key(
+    state: tauri::State<'_, AppState>,
+    req: SetPrimaryKeyRequest,
+) -> Result<PrimaryKeyPlan> {
+    state
+        .get(&req.conn_id)
+        .await?
+        .as_driver()
+        .apply_primary_key(&req.table, &req.columns)
+        .await
+}

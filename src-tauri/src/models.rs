@@ -283,6 +283,30 @@ pub struct FetchPageRequest {
     pub filter_sql: Option<String>,
 }
 
+/// 기존 테이블에 기본 키를 지정하는 요청.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetPrimaryKeyRequest {
+    pub conn_id: String,
+    pub table: TableRef,
+    /// 기본 키를 구성할 컬럼(순서 유지).
+    pub columns: Vec<String>,
+}
+
+/// 기본 키 지정 계획. 실행 전 미리보기와 사전 검증 결과를 함께 담는다.
+///
+/// DDL 은 되돌리기 어려우므로 사용자에게 `statements` 를 보여주고 확인받은 뒤 실행한다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimaryKeyPlan {
+    /// 실행될 SQL(순서대로). 미리보기 겸 실제 실행 대상.
+    pub statements: Vec<String>,
+    /// 실행을 막는 사유. 비어 있어야 적용할 수 있다.
+    pub blockers: Vec<String>,
+    /// 막지는 않지만 알려야 할 사항(예: NOT NULL 로 바뀌는 컬럼).
+    pub warnings: Vec<String>,
+}
+
 /// 페이지 조회 결과: 데이터 + 편집에 필요한 PK 컬럼 목록.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -12,8 +12,10 @@ import type {
   DatabaseInfo,
   ExecResult,
   FetchPageRequest,
+  PrimaryKeyPlan,
   QueryResult,
   SchemaInfo,
+  SetPrimaryKeyRequest,
   TableInfo,
   TablePage,
   TableRef,
@@ -84,6 +86,16 @@ export function listColumns(
   table: TableRef,
 ): Promise<ColumnInfo[]> {
   return invoke("list_columns", { connId, table });
+}
+
+/** 기본 키 지정 계획을 세운다(실행하지 않음). */
+export function planPrimaryKey(req: SetPrimaryKeyRequest): Promise<PrimaryKeyPlan> {
+  return invoke("plan_primary_key", { req });
+}
+
+/** 계획을 재검증한 뒤 기본 키 DDL 을 실행한다. */
+export function applyPrimaryKey(req: SetPrimaryKeyRequest): Promise<PrimaryKeyPlan> {
+  return invoke("apply_primary_key", { req });
 }
 
 // ---- 데이터 ----

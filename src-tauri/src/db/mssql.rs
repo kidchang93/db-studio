@@ -537,6 +537,10 @@ impl Driver for MssqlDriver {
         ))
     }
 
+    fn dialect(&self) -> Dialect {
+        DIALECT
+    }
+
     async fn run_execute(&self, sql: &str) -> Result<ExecResult> {
         let start = Instant::now();
         let empty: Vec<&dyn ToSql> = Vec::new();
@@ -692,6 +696,88 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows[0].try_get::<i32, _>("c").unwrap().unwrap(), 2);
+    }
+
+    /// PK 가 없는 테이블에 기본 키를 지정한다.
+    /// SQL Server 는 PK 컬럼이 NOT NULL 이어야 하므로 ALTER COLUMN 이 선행되어야 한다.
+    #[tokio::test]
+    #[ignore]
+    async fn set_primary_key_on_table_without_pk() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.pk_test') IS NOT NULL DROP TABLE dbo.pk_test")
+            .await
+            .expect("drop");
+        // 일부러 nullable 로 만든다 — ALTER COLUMN 경로를 타는지 보기 위함.
+        d.simple_rows("CREATE TABLE dbo.pk_test (id INT NULL, name NVARCHAR(50) NULL)")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.pk_test VALUES (1,'a'),(2,'b')")
+            .await
+            .expect("insert");
+
+        let table = TableRef {
+            database: Some("master".into()),
+            schema: Some("dbo".into()),
+            name: "pk_test".into(),
+        };
+        let cols = vec!["id".to_string()];
+
+        // 계획: 차단 사유 없이 NOT NULL 경고가 붙어야 한다.
+        let plan = d.plan_primary_key(&table, &cols).await.expect("plan");
+        println!("[plan] {:?}", plan.statements);
+        assert!(plan.blockers.is_empty(), "차단됨: {:?}", plan.blockers);
+        assert!(!plan.warnings.is_empty(), "NOT NULL 경고가 없다");
+
+        d.apply_primary_key(&table, &cols).await.expect("apply");
+        assert_eq!(d.primary_keys(&table).await.unwrap(), vec!["id"]);
+
+        // 이미 PK 가 있으면 막아야 한다.
+        let again = d.plan_primary_key(&table, &cols).await.expect("replan");
+        assert!(!again.blockers.is_empty(), "기존 PK 를 감지하지 못했다");
+        println!("[재지정 차단] {:?}", again.blockers);
+    }
+
+    /// NULL·중복이 있으면 DDL 을 실행하기 전에 막아야 한다.
+    #[tokio::test]
+    #[ignore]
+    async fn primary_key_blocked_by_data() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.pk_bad') IS NOT NULL DROP TABLE dbo.pk_bad")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.pk_bad (id INT NULL, dup INT NULL)")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.pk_bad VALUES (NULL,7),(1,7)")
+            .await
+            .expect("insert");
+
+        let table = TableRef {
+            database: Some("master".into()),
+            schema: Some("dbo".into()),
+            name: "pk_bad".into(),
+        };
+
+        let null_plan = d
+            .plan_primary_key(&table, &["id".to_string()])
+            .await
+            .expect("plan");
+        println!("[NULL] {:?}", null_plan.blockers);
+        assert!(null_plan.blockers.iter().any(|b| b.contains("NULL")));
+
+        let dup_plan = d
+            .plan_primary_key(&table, &["dup".to_string()])
+            .await
+            .expect("plan");
+        println!("[중복] {:?}", dup_plan.blockers);
+        assert!(dup_plan.blockers.iter().any(|b| b.contains("유일")));
+
+        // 차단 상태에서 적용하면 DDL 이 실행되지 않아야 한다.
+        assert!(d
+            .apply_primary_key(&table, &["id".to_string()])
+            .await
+            .is_err());
+        assert!(d.primary_keys(&table).await.unwrap().is_empty());
     }
 
     /// macOS 스마트 인용부호(U+2018)가 섞인 조건은 SQL Server 가 구문 오류(102)로 거부한다.

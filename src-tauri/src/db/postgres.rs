@@ -333,6 +333,10 @@ impl Driver for PostgresDriver {
         ))
     }
 
+    fn dialect(&self) -> Dialect {
+        DIALECT
+    }
+
     async fn run_execute(&self, sql: &str) -> Result<ExecResult> {
         let start = Instant::now();
         let r = sqlx::raw_sql(AssertSqlSafe(sql))

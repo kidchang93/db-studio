@@ -838,3 +838,55 @@ table.grid tr.selected td {
   line-height: 1.4;
   white-space: normal;
 }
+
+/* 구조 뷰: 기본 키 컬럼 선택 */
+table.grid td.pick,
+table.grid th.pick {
+  width: 28px;
+  padding-left: 8px;
+  text-align: center;
+}
+table.grid td.pick input {
+  margin: 0;
+  cursor: pointer;
+}
+table.grid tbody tr.selected td {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* 기본 키 지정 다이얼로그 */
+.pk-section {
+  margin-bottom: 14px;
+}
+.pk-section:last-child {
+  margin-bottom: 0;
+}
+.pk-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.pk-head.danger {
+  color: var(--danger);
+}
+.pk-head.warn {
+  color: var(--warning);
+}
+.pk-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.pk-blocker {
+  color: var(--danger);
+  font-size: 12px;
+}
+.pk-note {
+  margin-top: 12px;
+  font-size: 11px;
+}

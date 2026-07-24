@@ -48,6 +48,98 @@ pub trait Driver: Send + Sync {
 
     /// 임의 DML/DDL. 영향 행 수 반환.
     async fn run_execute(&self, sql: &str) -> Result<ExecResult>;
+
+    /// 이 드라이버의 SQL 방언. 아래 기본 구현들이 DDL 을 만들 때 쓴다.
+    fn dialect(&self) -> sql::Dialect;
+
+    /// 기본 키 지정 계획을 세운다(**실행하지 않는다**).
+    ///
+    /// 방언으로 DDL 을 만들고, 실제 데이터로 NULL·중복을 미리 검사해 차단 사유를 모은다.
+    /// DB 가 뱉는 제약 위반 오류보다 먼저, 사람이 읽을 수 있는 형태로 알려주기 위함이다.
+    async fn plan_primary_key(
+        &self,
+        table: &TableRef,
+        columns: &[String],
+    ) -> Result<PrimaryKeyPlan> {
+        let d = self.dialect();
+        let cols = self.list_columns(table).await?;
+        let mut plan = PrimaryKeyPlan {
+            statements: sql::build_set_primary_key(&d, table, columns, &cols)?,
+            ..Default::default()
+        };
+
+        if d.pk_style == sql::PkStyle::Unsupported {
+            plan.blockers.push(
+                "이 DB 는 기존 테이블에 기본 키를 추가할 수 없습니다(테이블 재생성이 필요합니다)"
+                    .into(),
+            );
+            return Ok(plan);
+        }
+
+        if let Some(existing) = cols.iter().find(|c| c.is_primary_key) {
+            plan.blockers.push(format!(
+                "이미 기본 키가 있습니다(예: '{}'). 먼저 제거해야 합니다",
+                existing.name
+            ));
+            return Ok(plan);
+        }
+
+        // NULL 이 있으면 PK 로 쓸 수 없다. 어떤 컬럼인지 짚어 준다.
+        for name in columns {
+            let n = self
+                .scalar_count(&sql::build_null_count(&d, table, name))
+                .await?;
+            if n > 0 {
+                plan.blockers
+                    .push(format!("'{name}' 에 NULL 이 {n}건 있습니다"));
+            } else if cols.iter().any(|c| &c.name == name && c.nullable) {
+                plan.warnings
+                    .push(format!("'{name}' 이 NOT NULL 로 바뀝니다"));
+            }
+        }
+
+        // 값 조합이 유일해야 한다.
+        let dups = self
+            .scalar_count(&sql::build_duplicate_count(&d, table, columns))
+            .await?;
+        if dups > 0 {
+            plan.blockers.push(format!(
+                "선택한 컬럼 조합이 유일하지 않습니다(중복 {dups}건)"
+            ));
+        }
+        Ok(plan)
+    }
+
+    /// 계획을 다시 세워 차단 사유가 없을 때만 DDL 을 실행한다.
+    ///
+    /// 미리보기 시점과 실행 시점 사이에 데이터가 바뀔 수 있으므로 여기서 한 번 더 검증한다.
+    async fn apply_primary_key(
+        &self,
+        table: &TableRef,
+        columns: &[String],
+    ) -> Result<PrimaryKeyPlan> {
+        let plan = self.plan_primary_key(table, columns).await?;
+        if !plan.blockers.is_empty() {
+            return Err(AppError::Validation(plan.blockers.join(" / ")));
+        }
+        for stmt in &plan.statements {
+            self.run_execute(stmt).await.map_err(|e| e.with_sql(stmt))?;
+        }
+        Ok(plan)
+    }
+
+    /// COUNT(*) 한 건을 정수로 읽는다. 큰 정수는 문자열로 내려올 수 있어 양쪽을 받는다.
+    async fn scalar_count(&self, sql: &str) -> Result<u64> {
+        let r = self.run_query(sql, 1).await?;
+        let v = r
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .ok_or_else(|| AppError::Internal("COUNT 결과가 비어 있습니다".into()))?;
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            .ok_or_else(|| AppError::Internal(format!("COUNT 값을 해석할 수 없습니다: {v}")))
+    }
 }
 
 /// 활성 커넥션. 드라이버별 variant 를 보유하고 정적 디스패치한다.
