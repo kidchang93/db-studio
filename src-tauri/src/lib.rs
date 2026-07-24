@@ -60,6 +60,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 자동 업데이트는 데스크톱에서만 동작.
             #[cfg(desktop)]
@@ -92,6 +93,7 @@ pub fn run() {
             commands::data::apply_changes,
             commands::query::run_query,
             commands::query::run_execute,
+            commands::query::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

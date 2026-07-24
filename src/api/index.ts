@@ -109,6 +109,11 @@ export function applyAlterColumn(req: AlterColumnRequest): Promise<DdlPlan> {
   return invoke("apply_alter_column", { req });
 }
 
+/** 내보내기 결과를 파일로 저장한다(경로는 OS 저장 대화상자에서 받은 것). */
+export function writeTextFile(path: string, contents: string): Promise<void> {
+  return invoke("write_text_file", { path, contents });
+}
+
 // ---- 데이터 ----
 export function fetchTablePage(req: FetchPageRequest): Promise<TablePage> {
   return invoke("fetch_table_page", { req });

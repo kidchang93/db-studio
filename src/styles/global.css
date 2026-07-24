@@ -1020,3 +1020,81 @@ table.grid tbody tr.selected td {
 .welcome-hint {
   font-size: 11px;
 }
+
+/* 컬럼 표시 패널 (그리드를 보면서 켜고 끌 수 있도록 드롭다운) */
+.panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.col-panel {
+  position: absolute;
+  top: 38px;
+  left: 8px;
+  z-index: 41;
+  width: 300px;
+  max-width: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 38%);
+}
+.col-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.col-panel-head .where-input {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+.col-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.col-panel-list {
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px;
+}
+.col-panel-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.col-panel-list label:hover {
+  background: var(--bg-hover);
+}
+.col-panel-list input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.col-panel-list .col-type {
+  margin-left: auto;
+  font-size: 10px;
+  white-space: nowrap;
+}
+/* 컬럼을 감춘 상태를 버튼에 표시 */
+.btn.sm.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* 툴바 안의 작은 select */
+.select.sm {
+  padding: 2px 4px;
+  font-size: 11px;
+}

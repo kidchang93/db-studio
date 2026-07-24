@@ -80,6 +80,14 @@ PK 가 없어 읽기 전용이 되는 테이블을 구제하기 위해 **구조 
   | `RenameColumn` / `SpRename` | 앞 3종 / SQL Server | SQL Server 만 `sp_rename` 이며 식별자가 **문자열 인자**로 들어가므로 작은따옴표를 이스케이프한다 |
 - 프론트의 DDL 미리보기(차단 사유·경고·SQL)는 `DdlPlanView` 로 공통화해 기능이 늘어도 같은 형태로 확인받게 한다.
 
+## 6-1. 데이터 내보내기
+
+- 변환은 `src/lib/exportData.ts` 의 **순수 함수**(`formatRows`)로 두어 그리드·쿼리 결과가 같은 로직을 쓴다. 형식: CSV · TSV · JSON · Markdown · SQL INSERT.
+- **escape 는 형식별 규칙을 따른다** — CSV 는 RFC 4180(구분자·따옴표·개행이 있으면 감싸고 따옴표는 두 번), SQL 은 작은따옴표 두 번, Markdown 은 파이프와 개행 치환. 여기가 틀리면 내보낸 파일이 조용히 깨지므로 형식 추가 시 반드시 확인한다.
+- **NULL 은 빈 값**으로 내보낸다(JSON 만 `null` 유지). `NULL` 이라는 글자가 데이터로 다시 적재되는 것을 막기 위함.
+- 파일 저장은 OS 저장 대화상자(`plugin-dialog`)로 경로를 받아 `write_text_file` command 가 쓴다. 임의 경로 쓰기를 열지 않기 위해 **사용자가 직접 고른 경로만** 백엔드로 넘어간다.
+- 내보내기 범위는 셀 범위를 잡았으면 그 부분, 아니면 현재 페이지 전체다. 숨긴 컬럼은 제외된다(화면에 보이는 것과 일치시킨다).
+
 ## 7. 오류 처리
 
 - 백엔드: `AppError`(thiserror)로 종류 구분(`Connection`, `Query`, `Mapping`, `NotFound`, `Validation`, `Internal`). serde 직렬화해 `{ kind, message, detail? }`로 프론트 전달.
@@ -111,4 +119,5 @@ PK 가 없어 읽기 전용이 되는 테이블을 구제하기 위해 **구조 
 - **자유 파라미터**(`params`): 드라이버가 인식하는 키만 적용(예: PG `application_name`). 미지원 키는 무시.
 - 새 전송 옵션 추가 시: `models.rs`(+TS 타입) → 각 드라이버 `connect` 매핑 → `ConnectionDialog` 고급 섹션 UI 순으로 확장.
 
-<!-- TODO: 확인 필요 — 쿼리 히스토리/북마크, 결과 export(CSV/JSON), 다크·라이트 테마 토글은 MVP 이후 로드맵. -->
+<!-- 남은 로드맵: 쿼리 히스토리/북마크, 다크·라이트 테마 토글, FK 탐색, DDL 보기.
+     결과 export 는 "6-1. 데이터 내보내기" 로 구현 완료. -->

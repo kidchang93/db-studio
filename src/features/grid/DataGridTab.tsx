@@ -11,10 +11,14 @@ import {
   ArrowUp,
   Ban,
   Check,
+  ChevronsDown,
+  ChevronsUp,
   Columns3,
   Copy,
+  CopyPlus,
   Eye,
   Plus,
+  Download,
   RefreshCw,
   RotateCcw,
   Table as TableIcon,
@@ -33,6 +37,8 @@ import type {
 import { useUiStore } from "../../store/uiStore";
 import { Modal } from "../../components/Modal";
 import { StructureView } from "./StructureView";
+import { ExportDialog } from "./ExportDialog";
+import { ColumnVisibilityPanel } from "./ColumnVisibilityPanel";
 import { normalizeSmartQuotes, rawTextInputProps } from "../../lib/sqlText";
 
 interface Props {
@@ -45,7 +51,8 @@ interface InsertRow {
   values: Record<string, Cell>;
 }
 
-const PAGE_SIZE = 200;
+const PAGE_SIZES = [100, 200, 500, 1000] as const;
+const DEFAULT_PAGE_SIZE = 200;
 
 function displayValue(v: Cell): string {
   if (v === null || v === undefined) return "NULL";
@@ -79,6 +86,7 @@ export function DataGridTab({ connId, table }: Props) {
   const ui = useUiStore();
   const [page, setPage] = useState<TablePage | null>(null);
   const [offset, setOffset] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [sort, setSort] = useState<SortSpec[]>([]);
   const [loading, setLoading] = useState(false);
   /** 실제 조회에 적용된 WHERE (Enter/버튼으로 확정) */
@@ -118,9 +126,18 @@ export function DataGridTab({ connId, table }: Props) {
   const [anchor, setAnchor] = useState<{ row: number; col: number } | null>(null);
   /** 값 뷰어로 펼쳐 보는 셀. 그리드 셀은 잘려 보이므로 전체 값을 따로 띄운다. */
   const [viewer, setViewer] = useState<{ row: number; col: number } | null>(null);
+  /** 화면에서 감춘 컬럼(이름 기준). 300컬럼 테이블의 가로 스크롤을 줄인다. */
+  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
+  const [colPanel, setColPanel] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
 
-  const columns = page?.result.columns ?? [];
+  const allColumns = page?.result.columns ?? [];
+  /** 숨김을 걸러낸, 실제로 그리는 컬럼. 커서·복사·내보내기가 모두 이 기준을 쓴다. */
+  const columns = useMemo(
+    () => allColumns.filter((c) => !hiddenCols.has(c.name)),
+    [allColumns, hiddenCols],
+  );
   const rows = page?.result.rows ?? [];
   const pks = page?.primaryKeys ?? [];
   const editable = pks.length > 0;
@@ -155,7 +172,7 @@ export function DataGridTab({ connId, table }: Props) {
       const p = await api.fetchTablePage({
         connId,
         table,
-        limit: PAGE_SIZE,
+        limit: pageSize,
         offset,
         sort,
         filters: [],
@@ -179,7 +196,7 @@ export function DataGridTab({ connId, table }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [connId, table, offset, sort, whereSql, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connId, table, offset, sort, whereSql, reloadKey, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();
@@ -312,6 +329,29 @@ export function DataGridTab({ connId, table }: Props) {
       else next.add(rowIdx);
       return next;
     });
+  }
+
+  /** 커서 행을 복사해 새 행으로 추가한다(PK 는 비워 DB 가 채우게 둔다). */
+  function cloneRow() {
+    if (!cursor || !editable) return;
+    const values: Record<string, Cell> = {};
+    for (const c of allColumns) {
+      // PK 를 그대로 복사하면 중복으로 커밋이 실패한다.
+      values[c.name] = pks.includes(c.name) ? null : cellValue(cursor.row, c.name);
+    }
+    setInserts((p) => [...p, { id: crypto.randomUUID(), values }]);
+    ui.setStatus(`${offset + cursor.row + 1}행을 복제했습니다 — 커밋해야 반영됩니다`);
+  }
+
+  /** 선택 범위(없으면 커서 셀)를 NULL 로 만든다. */
+  function setRangeNull() {
+    if (!range || !editable) return;
+    for (let r = range.r1; r <= range.r2; r++) {
+      if (deleted.has(r)) continue;
+      for (let c = range.c1; c <= range.c2; c++) {
+        setExistingCell(r, columns[c].name, null);
+      }
+    }
   }
 
   function revert() {
@@ -454,6 +494,18 @@ export function DataGridTab({ connId, table }: Props) {
       e.preventDefault();
       return;
     }
+    // ⌘/Ctrl+D: 행 복제
+    if (mod && e.key.toLowerCase() === "d") {
+      cloneRow();
+      e.preventDefault();
+      return;
+    }
+    // ⌘/Ctrl+Shift+N: 선택 셀을 NULL 로
+    if (mod && e.shiftKey && e.key.toLowerCase() === "n") {
+      setRangeNull();
+      e.preventDefault();
+      return;
+    }
     // ⌘/Ctrl+A: 표 전체 선택
     if (mod && e.key.toLowerCase() === "a") {
       setAnchor({ row: 0, col: 0 });
@@ -528,7 +580,26 @@ export function DataGridTab({ connId, table }: Props) {
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [cursor]);
 
+  /** 내보내기 대상 — 셀 범위를 잡았으면 그 부분만, 아니면 현재 페이지 전체. */
+  const exportRows = useMemo(() => {
+    if (!multiRange) {
+      return rows.map((_, r) => columns.map((c) => cellValue(r, c.name)));
+    }
+    const out: Cell[][] = [];
+    for (let r = multiRange.r1; r <= multiRange.r2; r++) {
+      const line: Cell[] = [];
+      for (let c = multiRange.c1; c <= multiRange.c2; c++) {
+        line.push(cellValue(r, columns[c].name));
+      }
+      out.push(line);
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, columns, multiRange, edits]);
+
   const totalRows = page?.totalRows ?? null;
+  const atLastPage =
+    totalRows != null ? offset + pageSize >= totalRows : rows.length < pageSize;
 
   if (view === "structure") {
     return (
@@ -559,6 +630,28 @@ export function DataGridTab({ connId, table }: Props) {
         </button>
         <button
           className="btn sm"
+          onClick={cloneRow}
+          disabled={!editable || !cursor}
+          title={
+            !editable
+              ? "PK 가 없어 편집 불가"
+              : cursor
+                ? "커서 행 복제 (⌘/Ctrl+D)"
+                : "복제할 행을 선택하세요"
+          }
+        >
+          <CopyPlus size={13} /> 행 복제
+        </button>
+        <button
+          className="btn sm"
+          onClick={setRangeNull}
+          disabled={!editable || !range}
+          title="선택 셀을 NULL 로 (⌘/Ctrl+Shift+N)"
+        >
+          NULL
+        </button>
+        <button
+          className="btn sm"
           onClick={deleteSelected}
           disabled={!editable || selection.size === 0}
         >
@@ -580,6 +673,23 @@ export function DataGridTab({ connId, table }: Props) {
           }
         >
           <Copy size={13} /> 복사
+        </button>
+        <button
+          className="btn sm"
+          onClick={() => setExporting(true)}
+          disabled={rows.length === 0}
+          title="선택 범위 또는 전체를 CSV·JSON 등으로 내보내기"
+        >
+          <Download size={13} /> 내보내기
+        </button>
+        <button
+          className={`btn sm${hiddenCols.size > 0 ? " on" : ""}`}
+          onClick={() => setColPanel((v) => !v)}
+          disabled={allColumns.length === 0}
+          title="표시할 컬럼 선택"
+        >
+          <Columns3 size={13} /> 컬럼
+          {hiddenCols.size > 0 && ` (${columns.length}/${allColumns.length})`}
         </button>
         <button
           className="btn sm"
@@ -622,21 +732,56 @@ export function DataGridTab({ connId, table }: Props) {
           {offset + 1}–{offset + rows.length}
           {totalRows != null ? ` / ${totalRows}` : ""}
         </span>
+        <select
+          className="select sm"
+          value={pageSize}
+          title="페이지당 행 수"
+          onChange={(e) => {
+            setOffset(0);
+            setPageSize(Number(e.target.value));
+          }}
+        >
+          {PAGE_SIZES.map((n) => (
+            <option key={n} value={n}>
+              {n}행
+            </option>
+          ))}
+        </select>
         <button
           className="btn icon"
           disabled={offset === 0}
-          onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+          onClick={() => setOffset(0)}
+          title="첫 페이지"
+        >
+          <ChevronsUp size={14} />
+        </button>
+        <button
+          className="btn icon"
+          disabled={offset === 0}
+          onClick={() => setOffset(Math.max(0, offset - pageSize))}
           title="이전 페이지"
         >
           <ArrowUp size={14} />
         </button>
         <button
           className="btn icon"
-          disabled={totalRows != null ? offset + PAGE_SIZE >= totalRows : rows.length < PAGE_SIZE}
-          onClick={() => setOffset(offset + PAGE_SIZE)}
+          disabled={atLastPage}
+          onClick={() => setOffset(offset + pageSize)}
           title="다음 페이지"
         >
           <ArrowDown size={14} />
+        </button>
+        <button
+          className="btn icon"
+          // 전체 행 수를 모르면 마지막 위치를 계산할 수 없다.
+          disabled={totalRows == null || atLastPage}
+          onClick={() =>
+            totalRows != null &&
+            setOffset(Math.max(0, Math.floor((totalRows - 1) / pageSize) * pageSize))
+          }
+          title={totalRows == null ? "전체 행 수를 알 수 없습니다" : "마지막 페이지"}
+        >
+          <ChevronsDown size={14} />
         </button>
       </div>
 
@@ -852,6 +997,36 @@ export function DataGridTab({ connId, table }: Props) {
           </div>
         )}
       </div>
+
+      {colPanel && (
+        <ColumnVisibilityPanel
+          columns={allColumns}
+          hidden={hiddenCols}
+          onToggle={(name) =>
+            setHiddenCols((prev) => {
+              const next = new Set(prev);
+              if (next.has(name)) next.delete(name);
+              else next.add(name);
+              return next;
+            })
+          }
+          onAll={(hide) =>
+            setHiddenCols(hide ? new Set(allColumns.map((c) => c.name)) : new Set())
+          }
+          onClose={() => setColPanel(false)}
+        />
+      )}
+
+      {exporting && (
+        <ExportDialog
+          columns={columns}
+          // 선택 범위가 있으면 그만큼만, 없으면 현재 페이지 전체.
+          rows={exportRows}
+          name={table.name}
+          scopeNote={multiRange ? "선택 범위" : undefined}
+          onClose={() => setExporting(false)}
+        />
+      )}
 
       {viewer && columns[viewer.col] && (
         <ValueViewer
