@@ -2,7 +2,7 @@ import { useState } from "react";
 import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { Play, ScrollText } from "lucide-react";
+import { History, Play, ScrollText } from "lucide-react";
 import {
   Group as PanelGroup,
   Panel,
@@ -13,7 +13,15 @@ import { ResultTable } from "../grid/ResultTable";
 import type { DbKind, ExecResult, QueryResult } from "../../types";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
+import { useHistoryStore } from "../../store/historyStore";
+import { QueryHistory } from "./QueryHistory";
 import { normalizeSmartQuotes } from "../../lib/sqlText";
+
+/** 히스토리에 남길 오류 요약 — 첫 줄만 짧게. */
+function errorLine(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String((e as { message?: string })?.message ?? e);
+  return msg.split("\n")[0].slice(0, 200);
+}
 
 function dialectFor(kind?: DbKind): SQLDialect {
   switch (kind) {
@@ -35,6 +43,9 @@ export function QueryTab({ connId }: { connId: string }) {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [exec, setExec] = useState<ExecResult | null>(null);
   const [running, setRunning] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const addHistory = useHistoryStore((s) => s.add);
+  const connName = useConnectionStore((s) => s.connections[connId]?.name ?? connId);
 
   async function run() {
     setRunning(true);
@@ -42,10 +53,19 @@ export function QueryTab({ connId }: { connId: string }) {
     try {
       const r = await api.runQuery(connId, text, 5000);
       setResult(r);
+      addHistory({
+        sql: text,
+        connName,
+        ok: true,
+        rows: r.rows.length,
+        elapsedMs: r.elapsedMs,
+      });
       ui.setStatus(
         `${r.rows.length}행 반환${r.truncated ? " (잘림)" : ""} (${r.elapsedMs}ms)`,
       );
     } catch (e) {
+      // 실패한 쿼리도 남긴다 — 고쳐 쓰려고 다시 꺼내는 경우가 많다.
+      addHistory({ sql: text, connName, ok: false, error: errorLine(e) });
       ui.toastError(e, "쿼리 실행 실패");
     } finally {
       setRunning(false);
@@ -58,8 +78,16 @@ export function QueryTab({ connId }: { connId: string }) {
     try {
       const r = await api.runExecute(connId, text);
       setExec(r);
+      addHistory({
+        sql: text,
+        connName,
+        ok: true,
+        rows: r.rowsAffected,
+        elapsedMs: r.elapsedMs,
+      });
       ui.setStatus(`${r.rowsAffected}행 영향 (${r.elapsedMs}ms)`);
     } catch (e) {
+      addHistory({ sql: text, connName, ok: false, error: errorLine(e) });
       ui.toastError(e, "스크립트 실행 실패");
     } finally {
       setRunning(false);
@@ -75,8 +103,19 @@ export function QueryTab({ connId }: { connId: string }) {
           <button className="btn sm" onClick={runScript} disabled={running} title="DDL/다중 문장">
             <ScrollText size={13} /> 스크립트 실행
           </button>
+          <button
+            className={`btn sm${historyOpen ? " on" : ""}`}
+            onClick={() => setHistoryOpen((v) => !v)}
+            title="쿼리 히스토리"
+          >
+            <History size={13} /> 히스토리
+          </button>
           <span className="spacer" />
           <span className="muted">최대 5000행 표시</span>
+
+          {historyOpen && (
+            <QueryHistory onPick={setText} onClose={() => setHistoryOpen(false)} />
+          )}
         </div>
 
         <PanelGroup orientation="vertical" style={{ flex: 1, minHeight: 0 }}>

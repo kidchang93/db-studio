@@ -1115,3 +1115,77 @@ table.grid tbody tr.selected td {
 .ddl-pane .value-view {
   max-height: 220px;
 }
+
+/* 쿼리 히스토리 패널 */
+.query-toolbar {
+  position: relative;
+}
+.history-panel {
+  position: absolute;
+  top: 32px;
+  right: 8px;
+  z-index: 41;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 38%);
+}
+.history-list {
+  max-height: 380px;
+  overflow: auto;
+  padding: 4px;
+}
+.history-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.history-item:hover {
+  background: var(--bg-hover);
+}
+.history-body {
+  flex: 1;
+  min-width: 0;
+}
+.history-sql {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history-meta {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 성공·실패를 색으로 즉시 구분 */
+.history-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.history-mark.ok {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  color: var(--success);
+}
+.history-mark.fail {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--danger);
+}
