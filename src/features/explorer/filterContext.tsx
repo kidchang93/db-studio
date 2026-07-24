@@ -8,6 +8,11 @@ export interface TreeFilter {
   hideUnmatched: boolean;
   showTables: boolean;
   showViews: boolean;
+  /**
+   * 연결(프로필)별로 트리에 노출할 최상위 노드(DB 또는 스키마) 이름 목록.
+   * 키가 없으면 전체 표시. DataGrip 의 "N of M" 스키마 선택기에 해당한다.
+   */
+  visibleTop: Record<string, string[]>;
 }
 
 export const EMPTY_FILTER: TreeFilter = {
@@ -15,6 +20,7 @@ export const EMPTY_FILTER: TreeFilter = {
   hideUnmatched: false,
   showTables: true,
   showViews: true,
+  visibleTop: {},
 };
 
 export const TreeFilterContext = createContext<TreeFilter>(EMPTY_FILTER);
@@ -28,13 +34,35 @@ export function isFilterActive(f: TreeFilter): boolean {
   return f.hideUnmatched || !f.showTables || !f.showViews;
 }
 
+/** 트리 경로를 만든다. 이름에 `/` 가 있어도 깨지지 않게 각 조각을 인코딩한다. */
+export function joinPath(parent: string, name: string): string {
+  return `${parent}/${encodeURIComponent(name)}`;
+}
+
+/**
+ * 최상위 노드(연결 바로 아래의 DB·스키마)가 선택 목록에 있는지.
+ * 최상위가 아닌 경로는 이 필터의 대상이 아니므로 항상 true.
+ */
+export function inScope(f: TreeFilter, path: string): boolean {
+  const parts = path.split("/");
+  if (parts.length !== 2) return true;
+  const selected = f.visibleTop[parts[0]];
+  return !selected || selected.includes(decodeURIComponent(parts[1]));
+}
+
 /**
  * 컨테이너(DB·스키마) 노드를 필터 모드에서 보여줄지.
  *
  * 지연 로딩이라 닫힌 노드의 내용은 알 수 없다. 그래서 닫힌 노드는 **이름으로** 판단하고,
  * 열린 노드는 사용자가 명시적으로 펼친 것이자 안에 일치 항목이 있을 수 있으므로 항상 남긴다.
  */
-export function showContainer(f: TreeFilter, name: string, open: boolean): boolean {
+export function showContainer(
+  f: TreeFilter,
+  name: string,
+  open: boolean,
+  path: string,
+): boolean {
+  if (!inScope(f, path)) return false;
   if (!f.hideUnmatched || !f.text || open) return true;
   return matches(name, f.text);
 }

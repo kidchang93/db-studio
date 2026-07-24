@@ -532,7 +532,7 @@ export function DataGridTab({ connId, table }: Props) {
 
   if (view === "structure") {
     return (
-      <div className="grid-tab">
+      <div className="grid-tab" data-search-scope="grid">
         <div className="grid-toolbar">
           <ViewToggle view={view} onChange={setView} />
         </div>
@@ -542,7 +542,7 @@ export function DataGridTab({ connId, table }: Props) {
   }
 
   return (
-    <div className="grid-tab">
+    <div className="grid-tab" data-search-scope="grid">
       <div className="grid-toolbar">
         <ViewToggle view={view} onChange={setView} />
         <span className="toolbar-sep" />
@@ -647,6 +647,7 @@ export function DataGridTab({ connId, table }: Props) {
           <input
             ref={whereRef}
             {...rawTextInputProps}
+            data-search-input=""
             className="where-input mono"
             placeholder="예) id > 100 AND name LIKE '%kim%'   —  Tab 컬럼 완성 · Enter 적용"
             value={whereDraft}

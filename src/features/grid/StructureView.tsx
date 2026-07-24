@@ -76,7 +76,7 @@ export function StructureView({ connId, table }: Props) {
   }
 
   return (
-    <div className="structure-view">
+    <div className="structure-view" data-search-scope="structure">
       {!hasPk && cols && cols.length > 0 && (
         <div className="grid-toolbar">
           <KeyRound size={13} className="muted" />
@@ -112,6 +112,7 @@ export function StructureView({ connId, table }: Props) {
           <input
             ref={searchRef}
             {...rawTextInputProps}
+            data-search-input=""
             className="where-input"
             placeholder="컬럼 검색 — 이름·타입 (예: cc → con_code)"
             value={filter}

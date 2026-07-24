@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -22,6 +23,7 @@ import {
 } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { ConnectionDialog } from "./ConnectionDialog";
+import { SchemaPicker } from "./SchemaPicker";
 import { SchemaTree } from "../explorer/SchemaTree";
 import { isFilterActive, TreeFilterContext } from "../explorer/filterContext";
 import {
@@ -29,8 +31,32 @@ import {
   useConnectionStore,
 } from "../../store/connectionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { DB_META, type ConnectionProfile } from "../../types";
+import { DB_META, type ConnectionProfile, type DbKind } from "../../types";
 import { rawTextInputProps } from "../../lib/sqlText";
+
+const VISIBLE_TOP_KEY = "db-studio.visibleTop";
+
+/** 연결 아래 최상위 계층의 이름 — SQL Server·MySQL 은 DB, 그 외는 스키마. */
+function topLabel(kind: DbKind): "데이터베이스" | "스키마" {
+  return kind === "mssql" || kind === "mysql" ? "데이터베이스" : "스키마";
+}
+
+/** 표시 대상 선택은 UI 상태이므로 localStorage 에 남긴다(프로필 파일은 건드리지 않는다). */
+function loadVisibleTop(): Record<string, string[]> {
+  try {
+    return JSON.parse(localStorage.getItem(VISIBLE_TOP_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveVisibleTop(v: Record<string, string[]>) {
+  try {
+    localStorage.setItem(VISIBLE_TOP_KEY, JSON.stringify(v));
+  } catch {
+    // 저장 실패는 기능에 치명적이지 않으므로 조용히 넘긴다.
+  }
+}
 
 export function Sidebar() {
   const profiles = useConnectionStore((s) => s.profiles);
@@ -54,6 +80,12 @@ export function Sidebar() {
   const [showTables, setShowTables] = useState(true);
   const [showViews, setShowViews] = useState(true);
   const [filterMenu, setFilterMenu] = useState(false);
+  /** 연결별로 트리에 노출할 최상위 노드. 키가 없으면 전체 표시. */
+  const [visibleTop, setVisibleTop] = useState<Record<string, string[]>>(loadVisibleTop);
+  /** 연결별 최상위 노드 전체 목록(트리가 로드하며 알려 준다). */
+  const [topNodes, setTopNodes] = useState<Record<string, string[]>>({});
+  /** 선택기를 연 대상 프로필. */
+  const [picker, setPicker] = useState<ConnectionProfile | null>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
@@ -61,14 +93,35 @@ export function Sidebar() {
   const filterMenuRef = useRef<HTMLDivElement>(null);
 
   const treeFilter = useMemo(
-    () => ({ text: filter, hideUnmatched, showTables, showViews }),
-    [filter, hideUnmatched, showTables, showViews],
+    () => ({ text: filter, hideUnmatched, showTables, showViews, visibleTop }),
+    [filter, hideUnmatched, showTables, showViews, visibleTop],
   );
 
   function resetFilters() {
     setHideUnmatched(false);
     setShowTables(true);
     setShowViews(true);
+  }
+
+  /** 트리가 최상위 목록을 읽어 오면 받아 둔다(선택기와 뱃지에 필요). */
+  const reportTopLevel = useCallback((profileId: string, names: string[]) => {
+    setTopNodes((prev) =>
+      prev[profileId]?.length === names.length &&
+      prev[profileId].every((n, i) => n === names[i])
+        ? prev
+        : { ...prev, [profileId]: names },
+    );
+  }, []);
+
+  /** 선택 결과를 저장한다. null 이면 전체 표시로 되돌린다. */
+  function applyVisibleTop(profileId: string, next: string[] | null) {
+    setVisibleTop((prev) => {
+      const out = { ...prev };
+      if (next) out[profileId] = next;
+      else delete out[profileId];
+      saveVisibleTop(out);
+      return out;
+    });
   }
 
   // 필터 메뉴는 바깥을 클릭하거나 Esc 를 누르면 닫는다.
@@ -169,7 +222,8 @@ export function Sidebar() {
         e.preventDefault();
         return true;
       case "Escape":
-        setFilter("");
+        exitSearch();
+        e.preventDefault();
         return true;
       default:
         return false;
@@ -181,16 +235,23 @@ export function Sidebar() {
     const t = setTimeout(() => {
       const list = navItems();
       setMatchCount(list.length);
-      if (!filter) {
-        cursorRef.current?.classList.remove("tree-cursor");
-        cursorRef.current = null;
-        return;
-      }
+      // 검색을 끝냈을 뿐이면 커서를 남긴다. 지워 버리면 애써 찾은 위치가 사라져
+      // 트리 맨 위로 돌아가고, 다시 마우스로 클릭해야 한다.
+      if (!filter) return;
       if (list.length > 0) setCursor(list[0], list);
     }, 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
+
+  /**
+   * 검색을 끝내고 트리로 포커스를 넘긴다. **커서는 그대로 둔다** —
+   * 검색으로 찾아 둔 위치에서 방향키 탐색을 이어갈 수 있어야 한다.
+   */
+  function exitSearch() {
+    setFilter("");
+    treeRef.current?.focus();
+  }
 
   /**
    * 마우스로 행을 클릭해도 키보드와 같은 위치에 커서를 둔다.
@@ -255,7 +316,7 @@ export function Sidebar() {
   }
 
   return (
-    <div className="panel">
+    <div className="panel" data-search-scope="tree">
       <div className="sidebar-header">
         <Database size={14} />
         <span className="spacer">데이터 소스</span>
@@ -269,6 +330,7 @@ export function Sidebar() {
         <input
           ref={searchRef}
           {...rawTextInputProps}
+          data-search-input=""
           className="tree-search-input"
           placeholder="검색 (↑↓ 이동 · Enter 열기)"
           value={filter}
@@ -381,6 +443,18 @@ export function Sidebar() {
                 <Database size={13} color={connId ? "var(--success)" : "var(--text-faint)"} />
                 <span className="tree-label">{p.name}</span>
                 <span className="tree-badge">{DB_META[p.kind].label}</span>
+                {isOpen && (topNodes[p.id]?.length ?? 0) > 0 && (
+                  <button
+                    className={`schema-count${visibleTop[p.id] ? " on" : ""}`}
+                    title={`트리에 표시할 ${topLabel(p.kind)} 선택`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPicker(p);
+                    }}
+                  >
+                    {(visibleTop[p.id] ?? topNodes[p.id]).length} / {topNodes[p.id].length}
+                  </button>
+                )}
                 <span className="spacer" />
                 <span className="node-actions">
                   {connId ? (
@@ -440,12 +514,30 @@ export function Sidebar() {
                   </button>
                 </span>
               </div>
-              {isOpen && connId && <SchemaTree connId={connId} connName={p.name} />}
+              {isOpen && connId && (
+                <SchemaTree
+                  connId={connId}
+                  connName={p.name}
+                  path={p.id}
+                  onTopLevel={(names) => reportTopLevel(p.id, names)}
+                />
+              )}
             </div>
           );
         })}
       </div>
       </TreeFilterContext.Provider>
+
+      {picker && (
+        <SchemaPicker
+          connName={picker.name}
+          all={topNodes[picker.id] ?? []}
+          label={topLabel(picker.kind)}
+          selected={visibleTop[picker.id] ?? null}
+          onApply={(next) => applyVisibleTop(picker.id, next)}
+          onClose={() => setPicker(null)}
+        />
+      )}
 
       {dialog && (
         <ConnectionDialog profile={dialog.profile} onClose={() => setDialog(null)} />

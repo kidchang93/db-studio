@@ -890,3 +890,75 @@ table.grid tbody tr.selected td {
   margin-top: 12px;
   font-size: 11px;
 }
+
+/* 연결 노드의 "N / M" 스키마 선택 뱃지 (DataGrip 스타일) */
+.schema-count {
+  padding: 0 5px;
+  margin-left: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.schema-count:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* 일부만 고른 상태는 켜져 있음을 색으로 알린다 */
+.schema-count.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 데이터베이스·스키마 선택기 */
+.picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+.picker-search .where-input {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+.picker-actions {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+.picker-list {
+  max-height: min(50vh, 340px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+.picker-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.picker-list label:hover {
+  background: var(--bg-hover);
+}
+.picker-list input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.picker-empty {
+  padding: 10px;
+  font-size: 12px;
+}

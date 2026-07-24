@@ -12,6 +12,8 @@ import * as api from "../../api";
 import type { DbKind, SchemaInfo, TableInfo } from "../../types";
 import {
   highlight,
+  inScope,
+  joinPath,
   matches,
   showContainer,
   useTreeFilter,
@@ -23,6 +25,13 @@ import { useWorkspaceStore } from "../../store/workspaceStore";
 interface Ctx {
   connId: string;
   connName: string;
+  /** 범위 필터용 경로. 상위에서 내려오며 `연결/DB/스키마` 로 쌓인다. */
+  path: string;
+  /**
+   * 최상위 노드(DB 또는 스키마) 목록을 상위에 알린다.
+   * 사이드바가 "N / M" 뱃지와 선택기를 그리는 데 쓴다.
+   */
+  onTopLevel?: (names: string[]) => void;
 }
 
 /**
@@ -32,12 +41,27 @@ interface Ctx {
  * - PostgreSQL: 스키마 → 테이블 (연결당 1 DB)
  * - SQLite: 테이블
  */
-export function SchemaTree({ connId, connName }: Ctx) {
+export function SchemaTree({ connId, connName, path, onTopLevel }: Ctx) {
   const kind = useConnectionStore((s) => s.connections[connId]?.handle.kind);
   if (kind === "mssql" || kind === "mysql") {
-    return <DatabaseList connId={connId} connName={connName} kind={kind} />;
+    return (
+      <DatabaseList
+        connId={connId}
+        connName={connName}
+        path={path}
+        onTopLevel={onTopLevel}
+        kind={kind}
+      />
+    );
   }
-  return <RootSchemas connId={connId} connName={connName} />;
+  return (
+    <RootSchemas
+      connId={connId}
+      connName={connName}
+      path={path}
+      onTopLevel={onTopLevel}
+    />
+  );
 }
 
 // ---------- 공용 ----------
@@ -66,7 +90,13 @@ function HighlightedName({ name }: { name: string }) {
 
 // ---------- 데이터베이스 레벨 (mssql/mysql) ----------
 
-function DatabaseList({ connId, connName, kind }: Ctx & { kind: DbKind }) {
+function DatabaseList({
+  connId,
+  connName,
+  path,
+  onTopLevel,
+  kind,
+}: Ctx & { kind: DbKind }) {
   const [dbs, setDbs] = useState<string[] | null>(null);
   const toastError = useUiStore((s) => s.toastError);
 
@@ -74,7 +104,12 @@ function DatabaseList({ connId, connName, kind }: Ctx & { kind: DbKind }) {
     let cancelled = false;
     api
       .listDatabases(connId)
-      .then((d) => !cancelled && setDbs(d.map((x) => x.name)))
+      .then((d) => {
+        if (cancelled) return;
+        const names = d.map((x) => x.name);
+        setDbs(names);
+        onTopLevel?.(names);
+      })
       .catch((e) => {
         if (!cancelled) {
           toastError(e, "데이터베이스 목록 로드 실패");
@@ -84,7 +119,7 @@ function DatabaseList({ connId, connName, kind }: Ctx & { kind: DbKind }) {
     return () => {
       cancelled = true;
     };
-  }, [connId, toastError]);
+  }, [connId, toastError, onTopLevel]);
 
   if (dbs === null) return <Loading depth={1} />;
   if (dbs.length === 0) return <div className="tree-empty">데이터베이스 없음</div>;
@@ -95,6 +130,7 @@ function DatabaseList({ connId, connName, kind }: Ctx & { kind: DbKind }) {
           key={db}
           connId={connId}
           connName={connName}
+          path={joinPath(path, db)}
           kind={kind}
           database={db}
         />
@@ -106,18 +142,20 @@ function DatabaseList({ connId, connName, kind }: Ctx & { kind: DbKind }) {
 function DatabaseNode({
   connId,
   connName,
+  path,
   kind,
   database,
 }: Ctx & { kind: DbKind; database: string }) {
   const [open, setOpen] = useState(false);
   const filter = useTreeFilter();
-  if (!showContainer(filter, database, open)) return null;
+  if (!showContainer(filter, database, open, path)) return null;
   return (
     <>
       <div
         className="tree-node"
         data-match={filter.text && matches(database, filter.text) ? "1" : undefined}
         data-kind="database"
+        data-scope-id={path}
         data-open={open ? "1" : "0"}
         style={{ paddingLeft: 14 }}
         onClick={() => setOpen((o) => !o)}
@@ -133,6 +171,7 @@ function DatabaseNode({
           <SchemaList
             connId={connId}
             connName={connName}
+            path={path}
             database={database}
             depth={2}
           />
@@ -140,6 +179,7 @@ function DatabaseNode({
           <TableNodes
             connId={connId}
             connName={connName}
+            path={path}
             database={database}
             schema={null}
             depth={2}
@@ -151,7 +191,7 @@ function DatabaseNode({
 
 // ---------- 스키마 레벨 ----------
 
-function RootSchemas({ connId, connName }: Ctx) {
+function RootSchemas({ connId, connName, path, onTopLevel }: Ctx) {
   const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
   const toastError = useUiStore((s) => s.toastError);
 
@@ -159,7 +199,11 @@ function RootSchemas({ connId, connName }: Ctx) {
     let cancelled = false;
     api
       .listSchemas(connId)
-      .then((s) => !cancelled && setSchemas(s))
+      .then((s) => {
+        if (cancelled) return;
+        setSchemas(s);
+        onTopLevel?.(s.map((x) => x.name));
+      })
       .catch((e) => {
         if (!cancelled) {
           toastError(e, "스키마 로드 실패");
@@ -169,7 +213,7 @@ function RootSchemas({ connId, connName }: Ctx) {
     return () => {
       cancelled = true;
     };
-  }, [connId, toastError]);
+  }, [connId, toastError, onTopLevel]);
 
   if (schemas === null) return <Loading depth={1} />;
   // 스키마 계층이 없는 DB(SQLite): 테이블 직접.
@@ -178,6 +222,7 @@ function RootSchemas({ connId, connName }: Ctx) {
       <TableNodes
         connId={connId}
         connName={connName}
+        path={path}
         database={null}
         schema={null}
         depth={1}
@@ -191,6 +236,7 @@ function RootSchemas({ connId, connName }: Ctx) {
           key={s.name}
           connId={connId}
           connName={connName}
+          path={joinPath(path, s.name)}
           database={null}
           schema={s.name}
           depth={1}
@@ -203,6 +249,7 @@ function RootSchemas({ connId, connName }: Ctx) {
 function SchemaList({
   connId,
   connName,
+  path,
   database,
   depth,
 }: Ctx & { database: string; depth: number }) {
@@ -231,6 +278,7 @@ function SchemaList({
       <TableNodes
         connId={connId}
         connName={connName}
+        path={path}
         database={database}
         schema={null}
         depth={depth}
@@ -244,6 +292,7 @@ function SchemaList({
           key={s.name}
           connId={connId}
           connName={connName}
+          path={joinPath(path, s.name)}
           database={database}
           schema={s.name}
           depth={depth}
@@ -256,19 +305,21 @@ function SchemaList({
 function SchemaNode({
   connId,
   connName,
+  path,
   database,
   schema,
   depth,
 }: Ctx & { database: string | null; schema: string; depth: number }) {
   const [open, setOpen] = useState(false);
   const filter = useTreeFilter();
-  if (!showContainer(filter, schema, open)) return null;
+  if (!showContainer(filter, schema, open, path)) return null;
   return (
     <>
       <div
         className="tree-node"
         data-match={filter.text && matches(schema, filter.text) ? "1" : undefined}
         data-kind="schema"
+        data-scope-id={path}
         data-open={open ? "1" : "0"}
         style={{ paddingLeft: depth * 14 }}
         onClick={() => setOpen((o) => !o)}
@@ -283,6 +334,7 @@ function SchemaNode({
         <TableNodes
           connId={connId}
           connName={connName}
+          path={path}
           database={database}
           schema={schema}
           depth={depth + 1}
@@ -297,6 +349,7 @@ function SchemaNode({
 function TableNodes({
   connId,
   connName,
+  path,
   database,
   schema,
   depth,
@@ -322,6 +375,8 @@ function TableNodes({
     };
   }, [connId, database, schema, toastError]);
 
+  // 범위 밖이면 테이블을 아예 그리지 않는다.
+  if (!inScope(filter, path)) return null;
   if (tables === null) return <Loading depth={depth} />;
   if (tables.length === 0) {
     return (
