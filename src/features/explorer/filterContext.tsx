@@ -1,10 +1,42 @@
 import { createContext, useContext, type ReactNode } from "react";
 
-/** 트리 speed-search 문자열. 하위 노드들이 구독한다. */
-export const TreeFilterContext = createContext("");
+/** 트리 검색·필터 상태. 하위 노드들이 구독한다. */
+export interface TreeFilter {
+  /** speed-search 문자열 */
+  text: string;
+  /** 일치하지 않는 항목을 숨길지. false 면 기존처럼 강조만 한다. */
+  hideUnmatched: boolean;
+  showTables: boolean;
+  showViews: boolean;
+}
 
-export function useTreeFilter(): string {
+export const EMPTY_FILTER: TreeFilter = {
+  text: "",
+  hideUnmatched: false,
+  showTables: true,
+  showViews: true,
+};
+
+export const TreeFilterContext = createContext<TreeFilter>(EMPTY_FILTER);
+
+export function useTreeFilter(): TreeFilter {
   return useContext(TreeFilterContext);
+}
+
+/** 기본값에서 벗어난 필터가 하나라도 걸려 있는지(뱃지 표시용). */
+export function isFilterActive(f: TreeFilter): boolean {
+  return f.hideUnmatched || !f.showTables || !f.showViews;
+}
+
+/**
+ * 컨테이너(DB·스키마) 노드를 필터 모드에서 보여줄지.
+ *
+ * 지연 로딩이라 닫힌 노드의 내용은 알 수 없다. 그래서 닫힌 노드는 **이름으로** 판단하고,
+ * 열린 노드는 사용자가 명시적으로 펼친 것이자 안에 일치 항목이 있을 수 있으므로 항상 남긴다.
+ */
+export function showContainer(f: TreeFilter, name: string, open: boolean): boolean {
+  if (!f.hideUnmatched || !f.text || open) return true;
+  return matches(name, f.text);
 }
 
 /** 검색어 정규화: 소문자 + 공백 제거(오타로 들어간 공백에 관대하게). */

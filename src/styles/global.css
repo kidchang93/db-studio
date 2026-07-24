@@ -283,6 +283,72 @@ select {
 .tree-search-input::placeholder {
   color: var(--text-faint);
 }
+
+/* 트리 필터 메뉴 (DataGrip 스타일) */
+.filter-menu-wrap {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+.filter-menu-wrap .btn.icon {
+  position: relative;
+}
+.filter-menu-wrap .btn.icon.on {
+  color: var(--accent);
+}
+/* 필터가 걸려 있음을 아이콘에 점으로 표시 */
+.filter-menu-wrap .btn.icon .dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 172px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+}
+.filter-menu label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.filter-menu label:hover {
+  background: var(--bg-hover);
+}
+.filter-menu input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+.filter-menu .head {
+  padding: 3px 6px 1px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.filter-menu .sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
 .tree:focus {
   outline: none;
 }
@@ -763,4 +829,12 @@ table.grid tr.selected td {
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* 필터 메뉴 안의 보조 설명 */
+.filter-menu .note {
+  padding: 0 6px 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
 }

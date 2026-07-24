@@ -10,7 +10,12 @@ import {
 } from "lucide-react";
 import * as api from "../../api";
 import type { DbKind, SchemaInfo, TableInfo } from "../../types";
-import { highlight, matches, useTreeFilter } from "./filterContext";
+import {
+  highlight,
+  matches,
+  showContainer,
+  useTreeFilter,
+} from "./filterContext";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -55,8 +60,8 @@ function Loading({ depth }: { depth: number }) {
 
 /** 검색어를 반영해 이름을 강조 렌더링한다. */
 function HighlightedName({ name }: { name: string }) {
-  const filter = useTreeFilter();
-  return <>{highlight(name, filter)}</>;
+  const { text } = useTreeFilter();
+  return <>{highlight(name, text)}</>;
 }
 
 // ---------- 데이터베이스 레벨 (mssql/mysql) ----------
@@ -106,11 +111,12 @@ function DatabaseNode({
 }: Ctx & { kind: DbKind; database: string }) {
   const [open, setOpen] = useState(false);
   const filter = useTreeFilter();
+  if (!showContainer(filter, database, open)) return null;
   return (
     <>
       <div
         className="tree-node"
-        data-match={filter && matches(database, filter) ? "1" : undefined}
+        data-match={filter.text && matches(database, filter.text) ? "1" : undefined}
         data-kind="database"
         data-open={open ? "1" : "0"}
         style={{ paddingLeft: 14 }}
@@ -256,11 +262,12 @@ function SchemaNode({
 }: Ctx & { database: string | null; schema: string; depth: number }) {
   const [open, setOpen] = useState(false);
   const filter = useTreeFilter();
+  if (!showContainer(filter, schema, open)) return null;
   return (
     <>
       <div
         className="tree-node"
-        data-match={filter && matches(schema, filter) ? "1" : undefined}
+        data-match={filter.text && matches(schema, filter.text) ? "1" : undefined}
         data-kind="schema"
         data-open={open ? "1" : "0"}
         style={{ paddingLeft: depth * 14 }}
@@ -323,14 +330,31 @@ function TableNodes({
       </div>
     );
   }
-  // 검색해도 항목을 숨기지 않는다. 일치 항목만 표시(data-match)하고 강조한다.
+
+  // 필터 모드에서는 실제로 걸러내고, 아니면 기존처럼 강조만 한다(data-match).
+  const shown = tables.filter((t) => {
+    if (t.kind === "view" ? !filter.showViews : !filter.showTables) return false;
+    if (filter.hideUnmatched && filter.text && !matches(t.name, filter.text)) {
+      return false;
+    }
+    return true;
+  });
+
+  if (shown.length === 0) {
+    return (
+      <div className="tree-empty" style={{ paddingLeft: depth * 14 + 8 }}>
+        일치하는 항목 없음
+      </div>
+    );
+  }
+
   return (
     <>
-      {tables.map((t) => (
+      {shown.map((t) => (
         <div
           key={t.name}
           className="tree-node"
-          data-match={filter && matches(t.name, filter) ? "1" : undefined}
+          data-match={filter.text && matches(t.name, filter.text) ? "1" : undefined}
           data-kind="table"
           style={{ paddingLeft: depth * 14 }}
           onDoubleClick={() =>
@@ -344,7 +368,7 @@ function TableNodes({
         >
           <span className="tree-twisty" />
           {t.kind === "view" ? <Eye size={13} /> : <Table2 size={13} />}
-          <span className="tree-label">{highlight(t.name, filter)}</span>
+          <span className="tree-label">{highlight(t.name, filter.text)}</span>
           {t.kind === "view" && <span className="tree-badge">뷰</span>}
         </div>
       ))}

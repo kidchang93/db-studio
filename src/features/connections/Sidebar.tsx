@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -9,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Database,
+  Filter,
   Pencil,
   Plug,
   Plus,
@@ -21,7 +23,7 @@ import {
 import { Modal } from "../../components/Modal";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { SchemaTree } from "../explorer/SchemaTree";
-import { TreeFilterContext } from "../explorer/filterContext";
+import { isFilterActive, TreeFilterContext } from "../explorer/filterContext";
 import {
   connIdForProfile,
   useConnectionStore,
@@ -47,9 +49,44 @@ export function Sidebar() {
   const [filter, setFilter] = useState("");
   const [matchCount, setMatchCount] = useState(0);
   const [matchIdx, setMatchIdx] = useState(0);
+  // 트리 필터(DataGrip 스타일): 검색어와 별개로 표시 대상을 좁힌다.
+  const [hideUnmatched, setHideUnmatched] = useState(false);
+  const [showTables, setShowTables] = useState(true);
+  const [showViews, setShowViews] = useState(true);
+  const [filterMenu, setFilterMenu] = useState(false);
+
   const searchRef = useRef<HTMLInputElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
   const cursorRef = useRef<HTMLElement | null>(null);
+  const filterMenuRef = useRef<HTMLDivElement>(null);
+
+  const treeFilter = useMemo(
+    () => ({ text: filter, hideUnmatched, showTables, showViews }),
+    [filter, hideUnmatched, showTables, showViews],
+  );
+
+  function resetFilters() {
+    setHideUnmatched(false);
+    setShowTables(true);
+    setShowViews(true);
+  }
+
+  // 필터 메뉴는 바깥을 클릭하거나 Esc 를 누르면 닫는다.
+  useEffect(() => {
+    if (!filterMenu) return;
+    const onDown = (e: globalThis.MouseEvent) => {
+      if (!filterMenuRef.current?.contains(e.target as Node)) setFilterMenu(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setFilterMenu(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [filterMenu]);
 
   /**
    * 키보드 이동 대상 행들(DOM 순서 = 화면 순서).
@@ -248,9 +285,61 @@ export function Sidebar() {
             <X size={13} />
           </button>
         )}
+        <div className="filter-menu-wrap" ref={filterMenuRef}>
+          <button
+            className={`btn icon${isFilterActive(treeFilter) ? " on" : ""}`}
+            title="필터"
+            aria-expanded={filterMenu}
+            onClick={() => setFilterMenu((v) => !v)}
+          >
+            <Filter size={13} />
+            {isFilterActive(treeFilter) && <span className="dot" />}
+          </button>
+          {filterMenu && (
+            <div className="filter-menu">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={hideUnmatched}
+                  onChange={(e) => setHideUnmatched(e.target.checked)}
+                />
+                일치 항목만 보기
+              </label>
+              <div className="muted note">
+                펼치지 않은 폴더는 내용을 알 수 없어 이름으로 걸러집니다.
+              </div>
+              <div className="sep" />
+              <div className="muted head">표시할 객체</div>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={showTables}
+                  onChange={(e) => setShowTables(e.target.checked)}
+                />
+                테이블
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={showViews}
+                  onChange={(e) => setShowViews(e.target.checked)}
+                />
+                뷰
+              </label>
+              {isFilterActive(treeFilter) && (
+                <>
+                  <div className="sep" />
+                  <button className="btn sm" onClick={resetFilters}>
+                    필터 초기화
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      <TreeFilterContext.Provider value={filter}>
+      <TreeFilterContext.Provider value={treeFilter}>
       <div
         className="tree"
         ref={treeRef}
