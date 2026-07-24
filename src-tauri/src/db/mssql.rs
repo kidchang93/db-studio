@@ -537,6 +537,32 @@ impl Driver for MssqlDriver {
         ))
     }
 
+    /// SQL Server 는 기본값이 명명 제약이라, 바꾸려면 기존 제약 이름을 알아야 한다.
+    async fn default_constraint_name(
+        &self,
+        table: &TableRef,
+        column: &str,
+    ) -> Result<Option<String>> {
+        let sql = format!(
+            "SELECT dc.name AS n FROM {}sys.default_constraints dc \
+             JOIN sys.columns c ON c.object_id = dc.parent_object_id \
+             AND c.column_id = dc.parent_column_id \
+             WHERE dc.parent_object_id = OBJECT_ID(@P1) AND c.name = @P2",
+            db_prefix(table.database.as_deref())
+        );
+        let qualified = format!("{}.{}", schema_or_default(table), table.name);
+        let rows = self
+            .query_rows(
+                &sql,
+                &[Value::String(qualified), Value::String(column.to_string())],
+            )
+            .await?;
+        Ok(rows
+            .first()
+            .map(|r| get_str(r, "n"))
+            .filter(|s| !s.is_empty()))
+    }
+
     fn dialect(&self) -> Dialect {
         DIALECT
     }

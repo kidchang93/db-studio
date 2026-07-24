@@ -962,3 +962,17 @@ table.grid tbody tr.selected td {
   padding: 10px;
   font-size: 12px;
 }
+
+/* 다이얼로그 안의 체크박스 한 줄 */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: 14px;
+}
+.check-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}

@@ -65,7 +65,7 @@ pub async fn list_columns(
 pub async fn plan_primary_key(
     state: tauri::State<'_, AppState>,
     req: SetPrimaryKeyRequest,
-) -> Result<PrimaryKeyPlan> {
+) -> Result<DdlPlan> {
     state
         .get(&req.conn_id)
         .await?
@@ -79,11 +79,39 @@ pub async fn plan_primary_key(
 pub async fn apply_primary_key(
     state: tauri::State<'_, AppState>,
     req: SetPrimaryKeyRequest,
-) -> Result<PrimaryKeyPlan> {
+) -> Result<DdlPlan> {
     state
         .get(&req.conn_id)
         .await?
         .as_driver()
         .apply_primary_key(&req.table, &req.columns)
+        .await
+}
+
+/// 컬럼 속성 변경 계획(DDL 미리보기 + 사전 검증). 실행하지 않는다.
+#[tauri::command]
+pub async fn plan_alter_column(
+    state: tauri::State<'_, AppState>,
+    req: AlterColumnRequest,
+) -> Result<DdlPlan> {
+    state
+        .get(&req.conn_id)
+        .await?
+        .as_driver()
+        .plan_alter_column(&req.table, &req.column, &req.change)
+        .await
+}
+
+/// 계획을 재검증한 뒤 컬럼 변경 DDL 을 실행한다.
+#[tauri::command]
+pub async fn apply_alter_column(
+    state: tauri::State<'_, AppState>,
+    req: AlterColumnRequest,
+) -> Result<DdlPlan> {
+    state
+        .get(&req.conn_id)
+        .await?
+        .as_driver()
+        .apply_alter_column(&req.table, &req.column, &req.change)
         .await
 }

@@ -56,14 +56,10 @@ pub trait Driver: Send + Sync {
     ///
     /// 방언으로 DDL 을 만들고, 실제 데이터로 NULL·중복을 미리 검사해 차단 사유를 모은다.
     /// DB 가 뱉는 제약 위반 오류보다 먼저, 사람이 읽을 수 있는 형태로 알려주기 위함이다.
-    async fn plan_primary_key(
-        &self,
-        table: &TableRef,
-        columns: &[String],
-    ) -> Result<PrimaryKeyPlan> {
+    async fn plan_primary_key(&self, table: &TableRef, columns: &[String]) -> Result<DdlPlan> {
         let d = self.dialect();
         let cols = self.list_columns(table).await?;
-        let mut plan = PrimaryKeyPlan {
+        let mut plan = DdlPlan {
             statements: sql::build_set_primary_key(&d, table, columns, &cols)?,
             ..Default::default()
         };
@@ -113,12 +109,113 @@ pub trait Driver: Send + Sync {
     /// 계획을 다시 세워 차단 사유가 없을 때만 DDL 을 실행한다.
     ///
     /// 미리보기 시점과 실행 시점 사이에 데이터가 바뀔 수 있으므로 여기서 한 번 더 검증한다.
-    async fn apply_primary_key(
+    async fn apply_primary_key(&self, table: &TableRef, columns: &[String]) -> Result<DdlPlan> {
+        let plan = self.plan_primary_key(table, columns).await?;
+        if !plan.blockers.is_empty() {
+            return Err(AppError::Validation(plan.blockers.join(" / ")));
+        }
+        for stmt in &plan.statements {
+            self.run_execute(stmt).await.map_err(|e| e.with_sql(stmt))?;
+        }
+        Ok(plan)
+    }
+
+    /// 컬럼의 기본값 제약 이름(SQL Server 처럼 기본값이 명명 제약인 DB 용).
+    /// 그 외 DB 는 해당 없음이라 None.
+    async fn default_constraint_name(
+        &self,
+        _table: &TableRef,
+        _column: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// 컬럼 속성 변경 계획을 세운다(**실행하지 않는다**).
+    async fn plan_alter_column(
         &self,
         table: &TableRef,
-        columns: &[String],
-    ) -> Result<PrimaryKeyPlan> {
-        let plan = self.plan_primary_key(table, columns).await?;
+        column: &str,
+        change: &ColumnChange,
+    ) -> Result<DdlPlan> {
+        let d = self.dialect();
+        let cols = self.list_columns(table).await?;
+        let cur = cols
+            .iter()
+            .find(|c| c.name == column)
+            .ok_or_else(|| AppError::Validation(format!("컬럼 '{column}' 을 찾을 수 없습니다")))?;
+
+        let mut plan = DdlPlan::default();
+
+        // 이름 변경은 마지막에 한다. 앞선 문장들이 아직 옛 이름을 참조하기 때문.
+        let rename = change
+            .new_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && *n != column);
+        if let Some(to) = rename {
+            if cols.iter().any(|c| c.name == to) {
+                plan.blockers.push(format!("'{to}' 컬럼이 이미 있습니다"));
+            }
+        }
+
+        match sql::build_alter_column(
+            &d,
+            table,
+            cur,
+            change,
+            self.default_constraint_name(table, column)
+                .await?
+                .as_deref(),
+        ) {
+            Ok(stmts) => plan.statements = stmts,
+            Err(AppError::Validation(msg)) => plan.blockers.push(msg),
+            Err(e) => return Err(e),
+        }
+
+        if let Some(to) = rename {
+            plan.statements
+                .push(sql::build_rename_column(&d, table, column, to));
+        }
+
+        // NOT NULL 로 바꾸려면 기존 데이터에 NULL 이 없어야 한다.
+        if change.nullable == Some(false) && cur.nullable {
+            let n = self
+                .scalar_count(&sql::build_null_count(&d, table, column))
+                .await?;
+            if n > 0 {
+                plan.blockers.push(format!(
+                    "'{column}' 에 NULL 이 {n}건 있어 NOT NULL 로 바꿀 수 없습니다"
+                ));
+            }
+        }
+
+        if cur.is_primary_key && change.nullable == Some(true) {
+            plan.blockers
+                .push("기본 키 컬럼은 NULL 을 허용할 수 없습니다".into());
+        }
+
+        if change.db_type.as_deref().is_some_and(|t| t != cur.db_type) {
+            plan.warnings.push(format!(
+                "타입을 {} → {} 로 바꿉니다. 변환할 수 없는 값이 있으면 DB 가 거부합니다",
+                cur.db_type,
+                change.db_type.as_deref().unwrap_or_default()
+            ));
+        }
+
+        if plan.statements.is_empty() && plan.blockers.is_empty() {
+            plan.blockers.push("변경할 내용이 없습니다".into());
+        }
+        Ok(plan)
+    }
+
+    /// 계획을 다시 세워 차단 사유가 없을 때만 컬럼 변경 DDL 을 실행한다.
+    async fn apply_alter_column(
+        &self,
+        table: &TableRef,
+        column: &str,
+        change: &ColumnChange,
+    ) -> Result<DdlPlan> {
+        let plan = self.plan_alter_column(table, column, change).await?;
         if !plan.blockers.is_empty() {
             return Err(AppError::Validation(plan.blockers.join(" / ")));
         }

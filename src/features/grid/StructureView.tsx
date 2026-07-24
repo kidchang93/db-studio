@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { KeyRound, Search, X } from "lucide-react";
+import { KeyRound, Pencil, Search, X } from "lucide-react";
 import { PrimaryKeyDialog } from "./PrimaryKeyDialog";
+import { ColumnEditDialog } from "./ColumnEditDialog";
 import * as api from "../../api";
 import type { ColumnInfo, TableRef } from "../../types";
 import { useUiStore } from "../../store/uiStore";
@@ -24,6 +25,8 @@ export function StructureView({ connId, table }: Props) {
   /** PK 후보로 고른 컬럼(순서 = 기본 키 컬럼 순서). */
   const [picked, setPicked] = useState<string[]>([]);
   const [pkDialog, setPkDialog] = useState(false);
+  /** 속성을 편집 중인 컬럼. */
+  const [editing, setEditing] = useState<ColumnInfo | null>(null);
   /** DDL 적용 후 컬럼 목록을 다시 읽기 위한 트리거. */
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -140,6 +143,7 @@ export function StructureView({ connId, table }: Props) {
               <th>타입</th>
               <th>NULL</th>
               <th>기본값</th>
+              <th className="pick" />
             </tr>
           </thead>
           <tbody>
@@ -169,6 +173,15 @@ export function StructureView({ connId, table }: Props) {
                   {c.nullable ? "NULL" : "NOT NULL"}
                 </td>
                 <td className={c.default ? "" : "null"}>{c.default ?? "—"}</td>
+                <td className="pick">
+                  <button
+                    className="btn icon"
+                    title="컬럼 속성 변경"
+                    onClick={() => setEditing(c)}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -183,6 +196,16 @@ export function StructureView({ connId, table }: Props) {
           </div>
         )}
       </div>
+
+      {editing && (
+        <ColumnEditDialog
+          connId={connId}
+          table={table}
+          column={editing}
+          onClose={() => setEditing(null)}
+          onApplied={() => setReloadKey((k) => k + 1)}
+        />
+      )}
 
       {pkDialog && (
         <PrimaryKeyDialog

@@ -38,6 +38,28 @@ pub enum PkStyle {
     Unsupported,
 }
 
+/// 컬럼 속성(타입·NULL·기본값) 변경 방식.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ColumnAlterStyle {
+    /// 속성마다 개별 문장. `ALTER COLUMN c TYPE t` / `SET|DROP NOT NULL` / `SET|DROP DEFAULT` (PostgreSQL)
+    PerAttribute,
+    /// `MODIFY COLUMN c <정의 전체>` — 바꾸지 않는 속성도 다시 써야 한다 (MySQL)
+    Redefine,
+    /// `ALTER COLUMN c <타입> [NOT] NULL` + 기본값은 별도 제약 (SQL Server)
+    AlterColumnAndConstraint,
+    /// 이름 변경만 가능 (SQLite)
+    RenameOnly,
+}
+
+/// 컬럼 이름 변경 방식.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RenameStyle {
+    /// `ALTER TABLE t RENAME COLUMN a TO b` (PostgreSQL, MySQL 8+, SQLite 3.25+)
+    RenameColumn,
+    /// `EXEC sp_rename '스키마.테이블.컬럼', '새이름', 'COLUMN'` (SQL Server)
+    SpRename,
+}
+
 /// 테이블 한정 방식.
 #[derive(Clone, Copy)]
 #[allow(clippy::enum_variant_names)] // …Table 접미사는 의도된 것
@@ -58,6 +80,8 @@ pub struct Dialect {
     pub limit_style: LimitStyle,
     pub naming: Naming,
     pub pk_style: PkStyle,
+    pub column_alter: ColumnAlterStyle,
+    pub rename_style: RenameStyle,
 }
 
 impl Dialect {
@@ -68,6 +92,8 @@ impl Dialect {
         limit_style: LimitStyle::LimitOffset,
         naming: Naming::SchemaTable,
         pk_style: PkStyle::AddPrimaryKey,
+        column_alter: ColumnAlterStyle::PerAttribute,
+        rename_style: RenameStyle::RenameColumn,
     };
     pub const MYSQL: Dialect = Dialect {
         quote_open: '`',
@@ -76,6 +102,8 @@ impl Dialect {
         limit_style: LimitStyle::LimitOffset,
         naming: Naming::DbTable,
         pk_style: PkStyle::AddPrimaryKey,
+        column_alter: ColumnAlterStyle::Redefine,
+        rename_style: RenameStyle::RenameColumn,
     };
     pub const SQLITE: Dialect = Dialect {
         quote_open: '"',
@@ -84,6 +112,8 @@ impl Dialect {
         limit_style: LimitStyle::LimitOffset,
         naming: Naming::SchemaTable,
         pk_style: PkStyle::Unsupported,
+        column_alter: ColumnAlterStyle::RenameOnly,
+        rename_style: RenameStyle::RenameColumn,
     };
     pub const MSSQL: Dialect = Dialect {
         quote_open: '[',
@@ -92,6 +122,8 @@ impl Dialect {
         limit_style: LimitStyle::OffsetFetch,
         naming: Naming::DbSchemaTable,
         pk_style: PkStyle::AlterThenConstraint,
+        column_alter: ColumnAlterStyle::AlterColumnAndConstraint,
+        rename_style: RenameStyle::SpRename,
     };
 
     /// 식별자 quoting. 닫는 따옴표는 두 번 반복해 이스케이프.
@@ -286,6 +318,139 @@ pub fn build_set_primary_key(
             out
         }
     })
+}
+
+/// 컬럼 이름 변경 DDL.
+pub fn build_rename_column(d: &Dialect, table: &TableRef, from: &str, to: &str) -> String {
+    match d.rename_style {
+        RenameStyle::RenameColumn => format!(
+            "ALTER TABLE {} RENAME COLUMN {} TO {}",
+            d.qualify(table),
+            d.quote_ident(from),
+            d.quote_ident(to)
+        ),
+        RenameStyle::SpRename => {
+            // sp_rename 은 식별자를 **문자열 인자**로 받는다. 값이 아니라 SQL 리터럴이므로
+            // 작은따옴표를 두 번 반복해 이스케이프한다.
+            let esc = |v: &str| v.replace('\'', "''");
+            let schema = table.schema.as_deref().unwrap_or("dbo");
+            format!(
+                "EXEC sp_rename '{}.{}.{}', '{}', 'COLUMN'",
+                esc(schema),
+                esc(&table.name),
+                esc(from),
+                esc(to)
+            )
+        }
+    }
+}
+
+/// 컬럼 정의 조각(`<타입> [NULL|NOT NULL] [DEFAULT x]`). 정의 전체를 다시 쓰는 방언용.
+fn column_definition(db_type: &str, nullable: bool, default: Option<&str>) -> String {
+    let mut out = db_type.to_string();
+    out.push_str(if nullable { " NULL" } else { " NOT NULL" });
+    if let Some(v) = default {
+        out.push_str(&format!(" DEFAULT {v}"));
+    }
+    out
+}
+
+/// 컬럼 속성 변경 DDL.
+///
+/// `cur` 은 변경 전 컬럼 메타, `ch` 는 바꿀 항목. 이름 변경은 여기 포함하지 않는다
+/// (순서 문제가 있어 [`build_rename_column`] 으로 분리).
+///
+/// `default_constraint` 는 SQL Server 에서 기본값을 바꿀 때 먼저 제거해야 하는
+/// 기존 제약 이름(드라이버가 조회해 넘긴다).
+pub fn build_alter_column(
+    d: &Dialect,
+    table: &TableRef,
+    cur: &ColumnInfo,
+    ch: &ColumnChange,
+    default_constraint: Option<&str>,
+) -> Result<Vec<String>> {
+    let qtable = d.qualify(table);
+    let qcol = d.quote_ident(&cur.name);
+    // 지정하지 않은 속성은 현재 값을 유지한다.
+    let db_type = ch.db_type.as_deref().unwrap_or(&cur.db_type);
+    let nullable = ch.nullable.unwrap_or(cur.nullable);
+    let default = if ch.set_default {
+        ch.default.as_deref()
+    } else {
+        cur.default.as_deref()
+    };
+
+    let type_changed = ch.db_type.as_deref().is_some_and(|t| t != cur.db_type);
+    let null_changed = ch.nullable.is_some_and(|n| n != cur.nullable);
+
+    let mut out = Vec::new();
+    match d.column_alter {
+        ColumnAlterStyle::RenameOnly => {
+            if type_changed || null_changed || ch.set_default {
+                return Err(AppError::Validation(
+                    "이 DB 는 컬럼의 타입·NULL·기본값을 변경할 수 없습니다(테이블 재생성이 필요합니다)"
+                        .into(),
+                ));
+            }
+        }
+        ColumnAlterStyle::PerAttribute => {
+            if type_changed {
+                out.push(format!(
+                    "ALTER TABLE {qtable} ALTER COLUMN {qcol} TYPE {db_type}"
+                ));
+            }
+            if null_changed {
+                out.push(format!(
+                    "ALTER TABLE {qtable} ALTER COLUMN {qcol} {}",
+                    if nullable {
+                        "DROP NOT NULL"
+                    } else {
+                        "SET NOT NULL"
+                    }
+                ));
+            }
+            if ch.set_default {
+                out.push(match default {
+                    Some(v) => format!("ALTER TABLE {qtable} ALTER COLUMN {qcol} SET DEFAULT {v}"),
+                    None => format!("ALTER TABLE {qtable} ALTER COLUMN {qcol} DROP DEFAULT"),
+                });
+            }
+        }
+        ColumnAlterStyle::Redefine => {
+            // MySQL 은 바꾸지 않는 속성까지 정의를 통째로 다시 써야 한다.
+            if type_changed || null_changed || ch.set_default {
+                out.push(format!(
+                    "ALTER TABLE {qtable} MODIFY COLUMN {qcol} {}",
+                    column_definition(db_type, nullable, default)
+                ));
+            }
+        }
+        ColumnAlterStyle::AlterColumnAndConstraint => {
+            // 타입과 NULL 은 한 문장으로 처리된다(둘 중 하나만 바뀌어도 타입을 다시 쓴다).
+            if type_changed || null_changed {
+                out.push(format!(
+                    "ALTER TABLE {qtable} ALTER COLUMN {qcol} {db_type} {}",
+                    if nullable { "NULL" } else { "NOT NULL" }
+                ));
+            }
+            if ch.set_default {
+                // 기본값이 명명 제약이라 기존 것을 먼저 떼야 한다.
+                if let Some(name) = default_constraint {
+                    out.push(format!(
+                        "ALTER TABLE {qtable} DROP CONSTRAINT {}",
+                        d.quote_ident(name)
+                    ));
+                }
+                if let Some(v) = default {
+                    let df = d.quote_ident(&format!("DF_{}_{}", table.name, cur.name));
+                    out.push(format!(
+                        "ALTER TABLE {qtable} ADD CONSTRAINT {df} DEFAULT {v} FOR {qcol}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// PK 후보 컬럼에 NULL 이 몇 건 있는지 세는 SELECT.
@@ -574,6 +739,103 @@ mod tests {
             pg,
             vec![r#"ALTER TABLE "dbo"."u" ADD PRIMARY KEY ("a", "we""ird")"#]
         );
+    }
+
+    fn chg() -> ColumnChange {
+        ColumnChange::default()
+    }
+
+    #[test]
+    fn alter_column_type_and_null_per_dialect() {
+        let cur = col("age", "INT", true);
+        let ch = ColumnChange {
+            db_type: Some("BIGINT".into()),
+            nullable: Some(false),
+            ..chg()
+        };
+
+        // PG: 속성마다 개별 문장
+        assert_eq!(
+            build_alter_column(&Dialect::POSTGRES, &t("u"), &cur, &ch, None).unwrap(),
+            vec![
+                r#"ALTER TABLE "dbo"."u" ALTER COLUMN "age" TYPE BIGINT"#.to_string(),
+                r#"ALTER TABLE "dbo"."u" ALTER COLUMN "age" SET NOT NULL"#.to_string(),
+            ]
+        );
+
+        // MySQL: 정의를 통째로 다시 쓴다(한 문장)
+        assert_eq!(
+            build_alter_column(&Dialect::MYSQL, &t("u"), &cur, &ch, None).unwrap(),
+            vec!["ALTER TABLE `dbo`.`u` MODIFY COLUMN `age` BIGINT NOT NULL".to_string()]
+        );
+
+        // SQL Server: 타입+NULL 이 한 문장
+        assert_eq!(
+            build_alter_column(&Dialect::MSSQL, &t("u"), &cur, &ch, None).unwrap(),
+            vec!["ALTER TABLE [dbo].[u] ALTER COLUMN [age] BIGINT NOT NULL".to_string()]
+        );
+
+        // SQLite: 타입/NULL 변경 불가 → 검증 오류
+        assert!(build_alter_column(&Dialect::SQLITE, &t("u"), &cur, &ch, None).is_err());
+    }
+
+    #[test]
+    fn alter_column_default_handling() {
+        let cur = col("flag", "INT", true);
+
+        // 기본값 설정
+        let set = ColumnChange {
+            set_default: true,
+            default: Some("0".into()),
+            ..chg()
+        };
+        assert_eq!(
+            build_alter_column(&Dialect::POSTGRES, &t("u"), &cur, &set, None).unwrap(),
+            vec![r#"ALTER TABLE "dbo"."u" ALTER COLUMN "flag" SET DEFAULT 0"#.to_string()]
+        );
+
+        // 기본값 제거
+        let drop = ColumnChange {
+            set_default: true,
+            default: None,
+            ..chg()
+        };
+        assert_eq!(
+            build_alter_column(&Dialect::POSTGRES, &t("u"), &cur, &drop, None).unwrap(),
+            vec![r#"ALTER TABLE "dbo"."u" ALTER COLUMN "flag" DROP DEFAULT"#.to_string()]
+        );
+
+        // SQL Server 는 명명 제약이라 기존 것을 먼저 떼고 새로 붙인다.
+        let ms = build_alter_column(&Dialect::MSSQL, &t("u"), &cur, &set, Some("DF_old")).unwrap();
+        assert_eq!(
+            ms,
+            vec![
+                "ALTER TABLE [dbo].[u] DROP CONSTRAINT [DF_old]".to_string(),
+                "ALTER TABLE [dbo].[u] ADD CONSTRAINT [DF_u_flag] DEFAULT 0 FOR [flag]".to_string(),
+            ]
+        );
+
+        // 바꾸지 않으면 문장이 나오지 않는다.
+        assert!(
+            build_alter_column(&Dialect::POSTGRES, &t("u"), &cur, &chg(), None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rename_column_per_dialect() {
+        assert_eq!(
+            build_rename_column(&Dialect::POSTGRES, &t("u"), "a", "b"),
+            r#"ALTER TABLE "dbo"."u" RENAME COLUMN "a" TO "b""#
+        );
+        // SQL Server 는 sp_rename 이며 식별자가 문자열 인자로 들어간다.
+        assert_eq!(
+            build_rename_column(&Dialect::MSSQL, &t("u"), "a", "b"),
+            "EXEC sp_rename 'dbo.u.a', 'b', 'COLUMN'"
+        );
+        // 작은따옴표가 섞이면 두 번 반복해 이스케이프한다.
+        assert!(build_rename_column(&Dialect::MSSQL, &t("u"), "a'x", "b").contains("'dbo.u.a''x'"));
     }
 
     #[test]

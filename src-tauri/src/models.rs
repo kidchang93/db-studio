@@ -293,18 +293,52 @@ pub struct SetPrimaryKeyRequest {
     pub columns: Vec<String>,
 }
 
-/// 기본 키 지정 계획. 실행 전 미리보기와 사전 검증 결과를 함께 담는다.
+/// DDL 실행 계획. 실행 전 미리보기와 사전 검증 결과를 함께 담는다.
 ///
 /// DDL 은 되돌리기 어려우므로 사용자에게 `statements` 를 보여주고 확인받은 뒤 실행한다.
+/// 기본 키 지정·컬럼 속성 변경 등 구조 변경 기능이 공통으로 쓴다.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrimaryKeyPlan {
+pub struct DdlPlan {
     /// 실행될 SQL(순서대로). 미리보기 겸 실제 실행 대상.
     pub statements: Vec<String>,
     /// 실행을 막는 사유. 비어 있어야 적용할 수 있다.
     pub blockers: Vec<String>,
     /// 막지는 않지만 알려야 할 사항(예: NOT NULL 로 바뀌는 컬럼).
     pub warnings: Vec<String>,
+}
+
+/// 컬럼 속성 변경 내용. `None` 인 항목은 건드리지 않는다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnChange {
+    /// 새 이름(없으면 유지).
+    #[serde(default)]
+    pub new_name: Option<String>,
+    /// 새 DB 타입(없으면 유지).
+    #[serde(default)]
+    pub db_type: Option<String>,
+    /// NULL 허용 여부(없으면 유지).
+    #[serde(default)]
+    pub nullable: Option<bool>,
+    /// 기본값을 건드릴지. false 면 `default` 는 무시된다.
+    /// `Option<Option<T>>` 대신 플래그를 두어 "제거"와 "유지"를 구분한다.
+    #[serde(default)]
+    pub set_default: bool,
+    /// `set_default` 가 true 일 때의 값. null 이면 기본값 제거.
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+/// 컬럼 속성 변경 요청.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlterColumnRequest {
+    pub conn_id: String,
+    pub table: TableRef,
+    /// 변경 대상 컬럼의 현재 이름.
+    pub column: String,
+    pub change: ColumnChange,
 }
 
 /// 페이지 조회 결과: 데이터 + 편집에 필요한 PK 컬럼 목록.

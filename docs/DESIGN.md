@@ -65,6 +65,21 @@ PK 가 없어 읽기 전용이 되는 테이블을 구제하기 위해 **구조 
   | `Unsupported` | SQLite | 기존 테이블에 PK 추가 불가(테이블 재생성 필요) → `blockers` 로 안내 |
 - 검증·DDL 생성 로직은 `Driver` 트레이트의 **기본 구현**으로 두어 드라이버 4곳에 중복되지 않게 한다. 드라이버는 `dialect()` 만 제공한다.
 
+**컬럼 속성 변경**(이름·타입·NULL·기본값)도 같은 2단계 계약을 쓴다(`plan_alter_column` → `apply_alter_column`).
+
+- 변경 요청은 `ColumnChange` 로 표현하며 **지정하지 않은 속성은 유지**된다. 기본값만은 "제거"와 "유지"를 구분해야 해서 `set_default` 플래그를 따로 둔다(`Option<Option<T>>` 회피).
+- **이름 변경은 항상 마지막 문장**이다. 앞선 문장들이 아직 옛 이름을 참조하기 때문.
+- 사전 검증: NOT NULL 전환 시 NULL 건수, 이름 충돌, PK 컬럼의 NULL 허용 시도를 막는다. 타입 변경은 막지 않고 경고로 알린다(변환 가능 여부는 DB 가 판단).
+- DB 차이는 `Dialect::column_alter`(`ColumnAlterStyle`) · `rename_style`(`RenameStyle`)에 가둔다.
+  | 방식 | DB | 특징 |
+  |------|-----|------|
+  | `PerAttribute` | PostgreSQL | 속성마다 개별 문장 |
+  | `Redefine` | MySQL | `MODIFY COLUMN` 으로 정의 전체를 다시 쓴다 — 바꾸지 않는 속성도 포함해야 한다 |
+  | `AlterColumnAndConstraint` | SQL Server | 타입+NULL 은 한 문장, 기본값은 **명명 제약**이라 기존 것을 떼고 다시 붙인다. 제약 이름은 드라이버가 `default_constraint_name()` 으로 조회해 넘긴다 |
+  | `RenameOnly` | SQLite | 이름 변경만 가능 → 나머지는 `blockers` 로 안내 |
+  | `RenameColumn` / `SpRename` | 앞 3종 / SQL Server | SQL Server 만 `sp_rename` 이며 식별자가 **문자열 인자**로 들어가므로 작은따옴표를 이스케이프한다 |
+- 프론트의 DDL 미리보기(차단 사유·경고·SQL)는 `DdlPlanView` 로 공통화해 기능이 늘어도 같은 형태로 확인받게 한다.
+
 ## 7. 오류 처리
 
 - 백엔드: `AppError`(thiserror)로 종류 구분(`Connection`, `Query`, `Mapping`, `NotFound`, `Validation`, `Internal`). serde 직렬화해 `{ kind, message, detail? }`로 프론트 전달.

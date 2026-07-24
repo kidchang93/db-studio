@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Info, KeyRound } from "lucide-react";
+import { KeyRound } from "lucide-react";
 import * as api from "../../api";
-import type { PrimaryKeyPlan, TableRef } from "../../types";
+import type { DdlPlan, TableRef } from "../../types";
 import { Modal } from "../../components/Modal";
 import { useUiStore } from "../../store/uiStore";
+import { DdlPlanView } from "./DdlPlanView";
 
 interface Props {
   connId: string;
@@ -28,7 +29,7 @@ export function PrimaryKeyDialog({
   onApplied,
 }: Props) {
   const ui = useUiStore();
-  const [plan, setPlan] = useState<PrimaryKeyPlan | null>(null);
+  const [plan, setPlan] = useState<DdlPlan | null>(null);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,52 +89,7 @@ export function PrimaryKeyDialog({
         </>
       }
     >
-      {error && <div className="pk-blocker">{error}</div>}
-
-      {!plan && !error && <div className="muted">검사 중…</div>}
-
-      {plan && (
-        <>
-          {plan.blockers.length > 0 && (
-            <div className="pk-section">
-              <div className="pk-head danger">
-                <AlertTriangle size={13} /> 적용할 수 없습니다
-              </div>
-              <ul className="pk-list">
-                {plan.blockers.map((b) => (
-                  <li key={b}>{b}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {plan.warnings.length > 0 && (
-            <div className="pk-section">
-              <div className="pk-head warn">
-                <Info size={13} /> 함께 적용되는 변경
-              </div>
-              <ul className="pk-list">
-                {plan.warnings.map((w) => (
-                  <li key={w}>{w}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {plan.statements.length > 0 && (
-            <div className="pk-section">
-              <div className="pk-head">실행될 SQL</div>
-              <pre className="value-view mono">{plan.statements.join(";\n")}</pre>
-            </div>
-          )}
-
-          {plan.blockers.length === 0 && (
-            <div className="muted pk-note">
-              구조 변경은 되돌릴 수 없습니다. SQL 을 확인한 뒤 적용하세요.
-            </div>
-          )}
-        </>
-      )}
+      <DdlPlanView plan={plan} error={error} />
     </Modal>
   );
 }

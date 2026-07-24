@@ -100,8 +100,31 @@ export interface SetPrimaryKeyRequest {
   columns: string[];
 }
 
-/** 기본 키 지정 계획 — DDL 미리보기 + 사전 검증 (Rust: PrimaryKeyPlan). */
-export interface PrimaryKeyPlan {
+/** 컬럼 속성 변경 내용. 지정하지 않은 항목은 유지된다 (Rust: ColumnChange). */
+export interface ColumnChange {
+  /** 새 이름(없으면 유지). */
+  newName?: string | null;
+  /** 새 DB 타입(없으면 유지). */
+  dbType?: string | null;
+  /** NULL 허용 여부(없으면 유지). */
+  nullable?: boolean | null;
+  /** 기본값을 건드릴지. false 면 default 는 무시된다. */
+  setDefault: boolean;
+  /** setDefault 가 true 일 때의 값. null 이면 기본값 제거. */
+  default?: string | null;
+}
+
+/** 컬럼 속성 변경 요청 (Rust: AlterColumnRequest). */
+export interface AlterColumnRequest {
+  connId: string;
+  table: TableRef;
+  /** 변경 대상 컬럼의 현재 이름. */
+  column: string;
+  change: ColumnChange;
+}
+
+/** DDL 실행 계획 — 미리보기 + 사전 검증 (Rust: DdlPlan). */
+export interface DdlPlan {
   /** 실행될 SQL(순서대로). */
   statements: string[];
   /** 비어 있어야 적용할 수 있다. */

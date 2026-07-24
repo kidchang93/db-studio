@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AlterColumnRequest,
   ApplyChangesRequest,
   ApplyChangesResult,
   ColumnInfo,
@@ -12,7 +13,7 @@ import type {
   DatabaseInfo,
   ExecResult,
   FetchPageRequest,
-  PrimaryKeyPlan,
+  DdlPlan,
   QueryResult,
   SchemaInfo,
   SetPrimaryKeyRequest,
@@ -89,13 +90,23 @@ export function listColumns(
 }
 
 /** 기본 키 지정 계획을 세운다(실행하지 않음). */
-export function planPrimaryKey(req: SetPrimaryKeyRequest): Promise<PrimaryKeyPlan> {
+export function planPrimaryKey(req: SetPrimaryKeyRequest): Promise<DdlPlan> {
   return invoke("plan_primary_key", { req });
 }
 
 /** 계획을 재검증한 뒤 기본 키 DDL 을 실행한다. */
-export function applyPrimaryKey(req: SetPrimaryKeyRequest): Promise<PrimaryKeyPlan> {
+export function applyPrimaryKey(req: SetPrimaryKeyRequest): Promise<DdlPlan> {
   return invoke("apply_primary_key", { req });
+}
+
+/** 컬럼 속성 변경 계획을 세운다(실행하지 않음). */
+export function planAlterColumn(req: AlterColumnRequest): Promise<DdlPlan> {
+  return invoke("plan_alter_column", { req });
+}
+
+/** 계획을 재검증한 뒤 컬럼 변경 DDL 을 실행한다. */
+export function applyAlterColumn(req: AlterColumnRequest): Promise<DdlPlan> {
+  return invoke("apply_alter_column", { req });
 }
 
 // ---- 데이터 ----
