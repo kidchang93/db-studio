@@ -15,7 +15,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 릴리스를 **먼저 하나만** 만들고 그 id 를 빌드 잡들에 넘긴다.
+  #
+  # 이게 없으면 각 빌드 잡이 "태그로 draft 를 찾고 없으면 생성"을 각자 수행하는데,
+  # draft 릴리스는 같은 태그로 여러 개 만들 수 있어 두 잡이 서로 다른 릴리스에
+  # 자산을 올린다. 그러면 publish 가 그중 하나만 공개해 나머지 플랫폼이 통째로
+  # 누락된다(v0.1.12 에서 macOS 자산이 사라진 원인).
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.mk.outputs.result }}
+    steps:
+      - uses: actions/github-script@v7
+        id: mk
+        env:
+          TAG: ${{ github.ref_name }}
+        with:
+          script: |
+            const tag = process.env.TAG
+            // 재실행 대비: 이미 있으면 그것을 재사용한다.
+            const list = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            })
+            const found = list.data.find((r) => r.tag_name === tag)
+            if (found) {
+              core.info(`기존 릴리스 재사용: id=${found.id}`)
+              return found.id
+            }
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `DB Studio ${tag}`,
+              body: "자산(Assets)에서 설치 파일을 내려받으세요. 설치된 앱은 이후 자동으로 업데이트됩니다.",
+              draft: true,
+              prerelease: false,
+            })
+            core.info(`릴리스 생성: id=${data.id}`)
+            return data.id
+          result-encoding: string
+
   build:
+    needs: create-release
     permissions:
       contents: write # 릴리스 생성/자산 업로드
     strategy:
@@ -69,14 +114,8 @@ jobs:
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "DB Studio ${{ github.ref_name }}"
-          releaseBody: "자산(Assets)에서 설치 파일을 내려받으세요. 설치된 앱은 이후 자동으로 업데이트됩니다."
-          # draft 로 올려 두고, publish 잡의 서명 검증을 통과해야 공개한다.
-          # draft 릴리스는 /releases/latest/download/ 로 노출되지 않으므로
-          # 검증 전 아티팩트가 업데이터에 도달하지 않는다.
-          releaseDraft: true
-          prerelease: false
+          # create-release 가 만든 릴리스에만 올린다(잡마다 새로 만들지 않도록).
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
   # 업데이터가 실제로 쓰는 latest.json 이 릴리스에 올라간 .sig 와 일치하는지 확인한 뒤에만 공개한다.
@@ -105,6 +144,13 @@ jobs:
 
           if data["version"] != tag.lstrip("v"):
               errors.append(f'latest.json version={data["version"]} 이 태그 {tag} 와 다름')
+
+          # 플랫폼이 통째로 빠지면 그 OS 사용자는 업데이트를 받지 못한다.
+          # 서명만 대조하면 "없는 항목"은 검사 대상이 아니라 그냥 통과해 버린다(v0.1.12 사고).
+          REQUIRED = ["darwin-aarch64", "darwin-x86_64", "windows-x86_64"]
+          for need in REQUIRED:
+              if need not in data["platforms"]:
+                  errors.append(f"{need} 항목이 latest.json 에 없음 — 해당 OS 빌드가 누락됐다")
 
           for name, p in data["platforms"].items():
               url = p["url"]
