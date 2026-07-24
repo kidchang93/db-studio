@@ -120,6 +120,60 @@ pub trait Driver: Send + Sync {
         Ok(plan)
     }
 
+    /// 테이블의 CREATE 문(DDL).
+    ///
+    /// 기본 구현은 컬럼 메타로 조립한 **근사치**다. 네이티브 명령으로 정확한 원문을
+    /// 얻을 수 있는 DB(MySQL 의 `SHOW CREATE TABLE`, SQLite 의 `sqlite_master`)는
+    /// 이 메서드를 재정의한다. 어느 쪽인지는 [`TableDdl::exact`] 로 알린다.
+    async fn table_ddl(&self, table: &TableRef) -> Result<TableDdl> {
+        let d = self.dialect();
+        let cols = self.list_columns(table).await?;
+        if cols.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "테이블 '{}' 의 컬럼을 찾을 수 없습니다",
+                table.name
+            )));
+        }
+        let pks: Vec<String> = cols
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.clone())
+            .collect();
+
+        let mut lines: Vec<String> = cols
+            .iter()
+            .map(|c| {
+                let mut s = format!("  {} {}", d.quote_ident(&c.name), c.db_type);
+                if !c.nullable {
+                    s.push_str(" NOT NULL");
+                }
+                if let Some(v) = &c.default {
+                    s.push_str(&format!(" DEFAULT {v}"));
+                }
+                s
+            })
+            .collect();
+
+        if !pks.is_empty() {
+            lines.push(format!(
+                "  PRIMARY KEY ({})",
+                pks.iter()
+                    .map(|k| d.quote_ident(k))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        Ok(TableDdl {
+            sql: format!(
+                "CREATE TABLE {} (\n{}\n);",
+                d.qualify(table),
+                lines.join(",\n")
+            ),
+            exact: false,
+        })
+    }
+
     /// 컬럼의 기본값 제약 이름(SQL Server 처럼 기본값이 명명 제약인 DB 용).
     /// 그 외 DB 는 해당 없음이라 None.
     async fn default_constraint_name(

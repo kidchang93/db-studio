@@ -308,6 +308,16 @@ pub struct DdlPlan {
     pub warnings: Vec<String>,
 }
 
+/// 테이블 DDL 조회 결과.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableDdl {
+    pub sql: String,
+    /// DB 가 준 원문인지(true), 컬럼 메타로 조립한 근사치인지(false).
+    /// 근사치는 인덱스·외래키·제약이 빠질 수 있어 UI 에서 그 사실을 알린다.
+    pub exact: bool,
+}
+
 /// 컬럼 속성 변경 내용. `None` 인 항목은 건드리지 않는다.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

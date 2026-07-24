@@ -17,6 +17,7 @@ import type {
   QueryResult,
   SchemaInfo,
   SetPrimaryKeyRequest,
+  TableDdl,
   TableInfo,
   TablePage,
   TableRef,
@@ -112,6 +113,11 @@ export function applyAlterColumn(req: AlterColumnRequest): Promise<DdlPlan> {
 /** 내보내기 결과를 파일로 저장한다(경로는 OS 저장 대화상자에서 받은 것). */
 export function writeTextFile(path: string, contents: string): Promise<void> {
   return invoke("write_text_file", { path, contents });
+}
+
+/** 테이블의 CREATE 문(DDL). */
+export function tableDdl(connId: string, table: TableRef): Promise<TableDdl> {
+  return invoke("table_ddl", { connId, table });
 }
 
 // ---- 데이터 ----

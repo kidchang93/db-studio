@@ -324,6 +324,20 @@ impl Driver for MysqlDriver {
         ))
     }
 
+    /// MySQL 은 원문 DDL 을 그대로 준다.
+    async fn table_ddl(&self, table: &TableRef) -> Result<TableDdl> {
+        let sql = format!("SHOW CREATE TABLE {}", DIALECT.qualify(table));
+        let row = sqlx::query(AssertSqlSafe(sql))
+            .fetch_one(&self.pool)
+            .await?;
+        // 컬럼명이 테이블/뷰에 따라 다르므로(Create Table / Create View) 위치로 읽는다.
+        let ddl: String = row.try_get(1).unwrap_or_default();
+        Ok(TableDdl {
+            sql: format!("{ddl};"),
+            exact: true,
+        })
+    }
+
     fn dialect(&self) -> Dialect {
         DIALECT
     }

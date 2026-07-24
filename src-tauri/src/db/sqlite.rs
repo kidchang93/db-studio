@@ -269,6 +269,26 @@ impl Driver for SqliteDriver {
         ))
     }
 
+    /// SQLite 는 생성 당시의 SQL 원문을 sqlite_master 에 보관한다.
+    async fn table_ddl(&self, table: &TableRef) -> Result<TableDdl> {
+        let sql: Option<String> =
+            sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = ?")
+                .bind(&table.name)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        match sql {
+            Some(s) => Ok(TableDdl {
+                sql: format!("{s};"),
+                exact: true,
+            }),
+            None => Err(AppError::NotFound(format!(
+                "'{}' 의 정의를 찾을 수 없습니다",
+                table.name
+            ))),
+        }
+    }
+
     fn dialect(&self) -> Dialect {
         DIALECT
     }

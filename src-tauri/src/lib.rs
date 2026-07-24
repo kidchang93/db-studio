@@ -89,6 +89,7 @@ pub fn run() {
             commands::metadata::apply_primary_key,
             commands::metadata::plan_alter_column,
             commands::metadata::apply_alter_column,
+            commands::metadata::table_ddl,
             commands::data::fetch_table_page,
             commands::data::apply_changes,
             commands::query::run_query,

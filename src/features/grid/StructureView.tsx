@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { KeyRound, Pencil, Search, X } from "lucide-react";
+import { Clipboard, Code2, KeyRound, Pencil, Search, X } from "lucide-react";
 import { PrimaryKeyDialog } from "./PrimaryKeyDialog";
 import { ColumnEditDialog } from "./ColumnEditDialog";
 import * as api from "../../api";
-import type { ColumnInfo, TableRef } from "../../types";
+import type { ColumnInfo, TableDdl, TableRef } from "../../types";
 import { useUiStore } from "../../store/uiStore";
 import { highlight, matches } from "../explorer/filterContext";
 import { rawTextInputProps } from "../../lib/sqlText";
@@ -29,6 +29,9 @@ export function StructureView({ connId, table }: Props) {
   const [editing, setEditing] = useState<ColumnInfo | null>(null);
   /** DDL 적용 후 컬럼 목록을 다시 읽기 위한 트리거. */
   const [reloadKey, setReloadKey] = useState(0);
+  /** DDL 보기(열었을 때만 조회한다). */
+  const [ddl, setDdl] = useState<TableDdl | null>(null);
+  const [ddlOpen, setDdlOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -43,6 +46,24 @@ export function StructureView({ connId, table }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connId, table, reloadKey]);
+
+  useEffect(() => {
+    if (!ddlOpen) return;
+    let alive = true;
+    api
+      .tableDdl(connId, table)
+      .then((d) => alive && setDdl(d))
+      .catch((e) => {
+        if (alive) {
+          ui.toastError(e, "DDL 을 가져오지 못했습니다");
+          setDdlOpen(false);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connId, table, ddlOpen, reloadKey]);
 
   // 컬럼이 많을 때가 본론이라, 화면에 들어오면 바로 검색할 수 있게 한다.
   useEffect(() => {
@@ -131,7 +152,47 @@ export function StructureView({ connId, table }: Props) {
         <span className="muted cursor-pos">
           {filter ? `${shown.length} / ${total}` : `${total}개 컬럼`}
         </span>
+        <button
+          className={`btn sm${ddlOpen ? " on" : ""}`}
+          onClick={() => setDdlOpen((v) => !v)}
+          title="CREATE 문 보기"
+        >
+          <Code2 size={13} /> DDL
+        </button>
       </div>
+
+      {ddlOpen && (
+        <div className="ddl-pane">
+          <div className="ddl-head">
+            <span className="muted">
+              {ddl?.exact === false
+                ? "컬럼 정보로 재구성한 근사치입니다 — 인덱스·외래키는 포함되지 않습니다"
+                : "DB 가 보고한 정의"}
+            </span>
+            <span className="spacer" />
+            <button
+              className="btn sm"
+              disabled={!ddl}
+              onClick={async () => {
+                if (!ddl) return;
+                try {
+                  await navigator.clipboard.writeText(ddl.sql);
+                  ui.setStatus("DDL 복사됨");
+                } catch {
+                  ui.pushToast({
+                    kind: "error",
+                    title: "복사 실패",
+                    message: "클립보드에 접근할 수 없습니다",
+                  });
+                }
+              }}
+            >
+              <Clipboard size={13} /> 복사
+            </button>
+          </div>
+          <pre className="value-view mono">{ddl ? ddl.sql : "불러오는 중…"}</pre>
+        </div>
+      )}
 
       <div className="grid-scroll">
         <table className="grid">

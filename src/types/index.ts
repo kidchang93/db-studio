@@ -123,6 +123,13 @@ export interface AlterColumnRequest {
   change: ColumnChange;
 }
 
+/** 테이블 DDL 조회 결과 (Rust: TableDdl). */
+export interface TableDdl {
+  sql: string;
+  /** DB 원문이면 true, 컬럼 메타로 조립한 근사치면 false. */
+  exact: boolean;
+}
+
 /** DDL 실행 계획 — 미리보기 + 사전 검증 (Rust: DdlPlan). */
 export interface DdlPlan {
   /** 실행될 SQL(순서대로). */

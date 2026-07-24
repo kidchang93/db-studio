@@ -1098,3 +1098,20 @@ table.grid tbody tr.selected td {
   padding: 2px 4px;
   font-size: 11px;
 }
+
+/* 구조 뷰의 DDL 패널 */
+.ddl-pane {
+  border-bottom: 1px solid var(--border);
+  padding: 8px;
+  flex-shrink: 0;
+}
+.ddl-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.ddl-pane .value-view {
+  max-height: 220px;
+}

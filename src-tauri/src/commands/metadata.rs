@@ -115,3 +115,18 @@ pub async fn apply_alter_column(
         .apply_alter_column(&req.table, &req.column, &req.change)
         .await
 }
+
+/// 테이블의 CREATE 문(DDL). DB 가 원문을 주면 그대로, 아니면 컬럼 메타로 조립한 근사치.
+#[tauri::command]
+pub async fn table_ddl(
+    state: tauri::State<'_, AppState>,
+    conn_id: String,
+    table: TableRef,
+) -> Result<TableDdl> {
+    state
+        .get(&conn_id)
+        .await?
+        .as_driver()
+        .table_ddl(&table)
+        .await
+}

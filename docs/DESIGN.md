@@ -80,6 +80,13 @@ PK 가 없어 읽기 전용이 되는 테이블을 구제하기 위해 **구조 
   | `RenameColumn` / `SpRename` | 앞 3종 / SQL Server | SQL Server 만 `sp_rename` 이며 식별자가 **문자열 인자**로 들어가므로 작은따옴표를 이스케이프한다 |
 - 프론트의 DDL 미리보기(차단 사유·경고·SQL)는 `DdlPlanView` 로 공통화해 기능이 늘어도 같은 형태로 확인받게 한다.
 
+### DDL 보기
+
+구조 뷰에서 테이블의 CREATE 문을 확인할 수 있다.
+
+- **정확한 원문을 주는 DB 는 그대로 쓴다** — MySQL `SHOW CREATE TABLE`, SQLite `sqlite_master.sql`.
+- PostgreSQL·SQL Server 는 표준 명령이 없어 **컬럼 메타로 조립한 근사치**를 만든다(`Driver::table_ddl` 기본 구현). 인덱스·외래키가 빠지므로 `TableDdl::exact = false` 로 내려보내고 UI 가 그 사실을 명시한다. **근사치를 원문처럼 보여주지 않는 것이 핵심**이다.
+
 ## 6-1. 데이터 내보내기
 
 - 변환은 `src/lib/exportData.ts` 의 **순수 함수**(`formatRows`)로 두어 그리드·쿼리 결과가 같은 로직을 쓴다. 형식: CSV · TSV · JSON · Markdown · SQL INSERT.
@@ -119,5 +126,5 @@ PK 가 없어 읽기 전용이 되는 테이블을 구제하기 위해 **구조 
 - **자유 파라미터**(`params`): 드라이버가 인식하는 키만 적용(예: PG `application_name`). 미지원 키는 무시.
 - 새 전송 옵션 추가 시: `models.rs`(+TS 타입) → 각 드라이버 `connect` 매핑 → `ConnectionDialog` 고급 섹션 UI 순으로 확장.
 
-<!-- 남은 로드맵: 쿼리 히스토리/북마크, 다크·라이트 테마 토글, FK 탐색, DDL 보기.
+<!-- 남은 로드맵: 쿼리 히스토리/북마크, 다크·라이트 테마 토글, FK 탐색.
      결과 export 는 "6-1. 데이터 내보내기" 로 구현 완료. -->
