@@ -116,6 +116,14 @@ jobs:
         with:
           # create-release 가 만든 릴리스에만 올린다(잡마다 새로 만들지 않도록).
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          # releaseId 가 있으면 tauri-action 은 릴리스를 만들지 않고(`index.ts`: `if (tagName && !releaseId)`)
+          # 이 태그를 latest.json 의 다운로드 URL 을 짓는 데만 쓴다.
+          # **빼면 안 된다** — draft 자산의 URL 은 `/download/untagged-<hash>/` 인데
+          # tauri-action 은 tagName 이 없으면 이걸 `/latest/download/` 로 치환한다.
+          # 그 URL 은 항상 "가장 최신 릴리스"를 가리키므로, 파일명에 버전이 없는
+          # macOS 자산(DB.Studio_universal.app.tar.gz)은 다음 릴리스가 나오는 순간
+          # 다른 버전 파일을 내려받게 되어 minisign 검증이 깨진다(v0.1.13 publish 실패).
+          tagName: ${{ github.ref_name }}
           args: ${{ matrix.args }}
 
   # 업데이터가 실제로 쓰는 latest.json 이 릴리스에 올라간 .sig 와 일치하는지 확인한 뒤에만 공개한다.
@@ -154,7 +162,14 @@ jobs:
 
           for name, p in data["platforms"].items():
               url = p["url"]
-              if f"/download/{tag}/" not in url:
+              # /latest/download/ 는 "가장 최신 릴리스"를 따라다니는 URL 이라
+              # 다음 릴리스가 나오면 이 버전의 서명과 어긋난다. tagName 누락의 신호다.
+              if "/releases/latest/download/" in url:
+                  errors.append(
+                      f"{name}: url 이 태그가 아닌 /latest/download/ 를 가리킴 — "
+                      f"build 잡의 tagName 입력이 빠졌는지 확인 -> {url}"
+                  )
+              elif f"/download/{tag}/" not in url:
                   errors.append(f"{name}: url 이 {tag} 가 아닌 다른 릴리스를 가리킴 -> {url}")
               sig = d / (unquote(url.rsplit("/", 1)[-1]) + ".sig")
               if not sig.exists():

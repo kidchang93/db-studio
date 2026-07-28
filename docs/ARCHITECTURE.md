@@ -126,6 +126,7 @@ profiles ◄── commands (연결 저장/로드 시)
 - `v*` 태그 푸시 → 양 OS 빌드·서명·릴리스 자동 수행. 로컬 `npm run tauri build` 는 서명 없는 단발 빌드용.
 - **릴리스는 3단계**다. `create-release` 가 draft 릴리스를 **하나만** 만들어 그 id 를 넘기고, `build` 잡들이 그 릴리스에만 자산을 올린 뒤, `publish` 가 검증 후 공개한다.
   - id 를 공유하지 않으면 각 빌드 잡이 "태그로 draft 를 찾고 없으면 생성"을 각자 수행하는데, **draft 릴리스는 같은 태그로 여러 개 만들 수 있어** 두 잡이 서로 다른 릴리스에 올린다. 그러면 공개된 쪽 외의 플랫폼이 통째로 누락된다(v0.1.12 에서 macOS 자산이 사라진 원인).
+  - `build` 잡은 `releaseId` 와 `tagName` 을 **둘 다** tauri-action 에 넘긴다. 릴리스 생성은 `releaseId` 가 있으면 건너뛰므로(`tauri-action/src/index.ts`: `if (tagName && !releaseId)`) 중복 생성 걱정 없이 안전하다. **`tagName` 을 빼면 안 된다** — draft 릴리스 자산의 URL 은 `/download/untagged-<hash>/` 이고 tauri-action 이 이를 치환할 때 `tagName` 이 없으면 `/latest/download/` 로 폴백한다. 그 URL 은 "가장 최신 릴리스"를 따라다니므로, 파일명에 버전이 없는 macOS 자산은 다음 릴리스가 나오는 순간 다른 버전 파일을 내려받아 minisign 검증이 깨진다(v0.1.13 publish 실패의 원인).
 - `publish` 잡은 `latest.json` 의 각 플랫폼 서명이 실제 업로드된 `.sig` 파일과 일치하는지, 그리고 **필수 플랫폼(darwin ×2, windows)이 모두 있는지** 확인한 뒤에야 draft 를 해제한다. 서명만 대조하면 "없는 항목"은 검사 대상이 아니라 그냥 통과해 버린다. draft 릴리스는 `/releases/latest/download/` 로 노출되지 않으므로, 검증에 실패한 아티팩트는 업데이터에 도달하지 않는다.
   - 워크플로에는 `concurrency`(그룹 `release-<ref>`, 취소 안 함)를 걸어 같은 태그의 중복 실행을 순차화한다. 병렬 실행 시 두 실행의 산출물이 섞여 `latest.json` 의 서명과 실제 자산이 어긋난다(v0.1.8 macOS 업데이트 실패의 원인). 태그를 다시 푸시할 때는 앞선 실행이 끝난 뒤에 하는 것이 안전하다.
   - macOS 업데이터 자산 `DB.Studio_universal.app.tar.gz` 는 **파일명에 버전이 없어** 재실행 시 조용히 덮어써진다. 위 두 장치가 이 덮어쓰기로 인한 서명 불일치를 막는 안전장치다.
