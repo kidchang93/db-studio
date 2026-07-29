@@ -123,7 +123,7 @@ export function AppShell() {
                     {t.kind === "table" ? (
                       <DataGridTab connId={t.connId} table={t.table} />
                     ) : (
-                      <QueryTab connId={t.connId} />
+                      <QueryTab connId={t.connId} tabId={t.id} />
                     )}
                   </div>
                 ))}

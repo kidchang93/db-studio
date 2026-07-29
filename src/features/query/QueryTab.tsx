@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -14,6 +14,7 @@ import type { DbKind, ExecResult, QueryResult } from "../../types";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useHistoryStore } from "../../store/historyStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
 import { QueryHistory } from "./QueryHistory";
 import { normalizeSmartQuotes } from "../../lib/sqlText";
 
@@ -36,7 +37,7 @@ function dialectFor(kind?: DbKind): SQLDialect {
   }
 }
 
-export function QueryTab({ connId }: { connId: string }) {
+export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const ui = useUiStore();
   const kind = useConnectionStore((s) => s.connections[connId]?.handle.kind);
   const [text, setText] = useState("SELECT 1;");
@@ -46,6 +47,25 @@ export function QueryTab({ connId }: { connId: string }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const addHistory = useHistoryStore((s) => s.add);
   const connName = useConnectionStore((s) => s.connections[connId]?.name ?? connId);
+
+  /**
+   * ⌘/Ctrl+E → 히스토리 토글 (DataGrip 과 같은 키).
+   *
+   * 탭은 전부 마운트된 채 `display` 로만 숨겨지므로 **활성 탭만** 반응해야 한다.
+   * 그렇지 않으면 열어 둔 콘솔 수만큼 패널이 함께 열린다.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "e") return;
+      // CodeMirror 등이 이미 처리했으면 넘긴다.
+      if (e.defaultPrevented) return;
+      if (useWorkspaceStore.getState().activeTabId !== tabId) return;
+      e.preventDefault();
+      setHistoryOpen((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tabId]);
 
   async function run() {
     setRunning(true);
@@ -106,7 +126,7 @@ export function QueryTab({ connId }: { connId: string }) {
           <button
             className={`btn sm${historyOpen ? " on" : ""}`}
             onClick={() => setHistoryOpen((v) => !v)}
-            title="쿼리 히스토리"
+            title="쿼리 히스토리 (Ctrl/Cmd+E)"
           >
             <History size={13} /> 히스토리
           </button>
