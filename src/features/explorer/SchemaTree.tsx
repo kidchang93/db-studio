@@ -76,7 +76,7 @@ function Twisty({ open }: { open: boolean }) {
 
 function Loading({ depth }: { depth: number }) {
   return (
-    <div className="tree-node" style={{ paddingLeft: depth * 14 }}>
+    <div className="tree-node" data-depth={depth} style={{ paddingLeft: depth * 14 }}>
       <Loader2 size={13} className="spin" /> <span className="muted">로딩…</span>
     </div>
   );
@@ -157,6 +157,7 @@ function DatabaseNode({
         data-kind="database"
         data-scope-id={path}
         data-open={open ? "1" : "0"}
+        data-depth={1}
         style={{ paddingLeft: 14 }}
         onClick={() => setOpen((o) => !o)}
       >
@@ -321,6 +322,7 @@ function SchemaNode({
         data-kind="schema"
         data-scope-id={path}
         data-open={open ? "1" : "0"}
+        data-depth={depth}
         style={{ paddingLeft: depth * 14 }}
         onClick={() => setOpen((o) => !o)}
       >
@@ -411,6 +413,7 @@ function TableNodes({
           className="tree-node"
           data-match={filter.text && matches(t.name, filter.text) ? "1" : undefined}
           data-kind="table"
+          data-depth={depth}
           style={{ paddingLeft: depth * 14 }}
           onDoubleClick={() =>
             openTable(connId, connName, {

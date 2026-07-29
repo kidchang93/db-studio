@@ -179,6 +179,58 @@ export function Sidebar() {
     return el && list.includes(el) ? el : (list[0] ?? null);
   }
 
+  /**
+   * 화면에 그려진 **모든** 행(검색 일치 여부와 무관).
+   *
+   * 폴더 단위 이동은 눈에 보이는 계층을 그대로 따라가야 해서 일치 목록(`navItems`)에
+   * 갇히면 안 된다. 부모 폴더가 검색어와 일치하지 않는 것이 오히려 흔하다.
+   */
+  function allRows(): HTMLElement[] {
+    const root = treeRef.current;
+    return root ? Array.from(root.querySelectorAll<HTMLElement>(".tree-node")) : [];
+  }
+
+  /** 행의 트리 깊이(연결=0, DB/스키마=1.., 테이블은 그 아래). */
+  function depthOf(el: HTMLElement): number {
+    return Number(el.getAttribute("data-depth") ?? 0);
+  }
+
+  /** 자기보다 얕은 행이 나올 때까지 위로 훑어 부모 폴더를 찾는다. */
+  function parentRow(el: HTMLElement): HTMLElement | null {
+    const rows = allRows();
+    const i = rows.indexOf(el);
+    if (i < 0) return null;
+    const depth = depthOf(el);
+    for (let j = i - 1; j >= 0; j--) {
+      if (depthOf(rows[j]) < depth) return rows[j];
+    }
+    return null;
+  }
+
+  /** 바로 다음 행이 더 깊으면 그것이 첫 자식이다. 빈 폴더면 null. */
+  function firstChildRow(el: HTMLElement): HTMLElement | null {
+    const rows = allRows();
+    const i = rows.indexOf(el);
+    const next = i < 0 ? undefined : rows[i + 1];
+    return next && depthOf(next) > depthOf(el) ? next : null;
+  }
+
+  /**
+   * 커서를 el 로 옮긴다. 검색 일치 목록 밖의 행이면 강조만 옮기고
+   * n/m 카운터는 건드리지 않는다(검색 결과 위치를 잃지 않도록).
+   */
+  function focusRow(el: HTMLElement) {
+    const list = navItems();
+    if (list.includes(el)) {
+      setCursor(el, list);
+      return;
+    }
+    cursorRef.current?.classList.remove("tree-cursor");
+    el.classList.add("tree-cursor");
+    cursorRef.current = el;
+    el.scrollIntoView({ block: "nearest" });
+  }
+
   function fire(el: HTMLElement, type: "click" | "dblclick") {
     el.dispatchEvent(new MouseEvent(type, { bubbles: true }));
   }
@@ -202,18 +254,33 @@ export function Sidebar() {
         e.preventDefault();
         return true;
       case "ArrowRight": {
-        // 닫힌 폴더면 펼치고, 이미 열려 있으면 아래로 이동.
+        // 검색창에서는 캐럿 이동이 우선이다.
+        if (e.target instanceof HTMLInputElement) return false;
+        // 폴더 안으로: 닫혀 있으면 펼치고, 이미 열려 있으면 첫 자식으로 내려간다.
         const el = cursorEl();
-        if (el?.getAttribute("data-open") === "0") fire(el, "click");
-        else moveBy(1);
+        if (!el) return false;
+        if (el.getAttribute("data-open") === "0") {
+          fire(el, "click");
+        } else {
+          const child = firstChildRow(el);
+          if (child) focusRow(child);
+        }
         e.preventDefault();
         return true;
       }
       case "ArrowLeft": {
-        // 열린 폴더면 접고, 아니면 위로 이동.
+        if (e.target instanceof HTMLInputElement) return false;
+        // 폴더 밖으로: 열려 있으면 접고, 아니면 **부모 폴더로 한 번에** 올라간다.
+        // 한 칸씩 위로 가면 테이블이 수백 개인 스키마를 빠져나오는 데
+        // ← 를 그 횟수만큼 눌러야 한다. 계층을 거슬러 오르는 것이 이 키의 일이다.
         const el = cursorEl();
-        if (el?.getAttribute("data-open") === "1") fire(el, "click");
-        else moveBy(-1);
+        if (!el) return false;
+        if (el.getAttribute("data-open") === "1") {
+          fire(el, "click");
+        } else {
+          const parent = parentRow(el);
+          if (parent) focusRow(parent);
+        }
         e.preventDefault();
         return true;
       }
@@ -263,16 +330,7 @@ export function Sidebar() {
     if (target.closest("button, input")) return;
     const el = target.closest<HTMLElement>(".tree-node");
     if (!el) return;
-
-    const list = navItems();
-    if (list.includes(el)) {
-      setCursor(el, list);
-    } else {
-      // 검색 중 일치하지 않는 행을 클릭한 경우: 강조만 옮기고 n/m 카운터는 그대로 둔다.
-      cursorRef.current?.classList.remove("tree-cursor");
-      el.classList.add("tree-cursor");
-      cursorRef.current = el;
-    }
+    focusRow(el);
     treeRef.current?.focus();
   }
 
@@ -426,6 +484,7 @@ export function Sidebar() {
                 className="tree-node"
                 data-kind="connection"
                 data-open={connId ? (expanded[p.id] ? "1" : "0") : undefined}
+                data-depth={0}
                 onClick={() => {
                   if (connId) setExpanded((e) => ({ ...e, [p.id]: !e[p.id] }));
                 }}
