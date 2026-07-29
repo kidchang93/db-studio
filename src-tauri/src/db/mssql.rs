@@ -923,4 +923,232 @@ mod tests {
             .expect("정규화 후에는 성공");
         assert_eq!(fixed.result.rows.len(), 1);
     }
+
+    /// 컬럼 속성 변경(Table Modify 2단계)을 실서버로 확인한다.
+    ///
+    /// SQL Server 만 기본값이 **명명 제약**이라 기존 제약 이름을 조회해 떼고 다시 붙여야 하고
+    /// (`default_constraint_name`), 이름 변경은 `sp_rename` 이라 문장 형태가 아예 다르다.
+    /// 생성되는 SQL 은 `sql.rs` 유닛 테스트가 덮지만, 서버가 그 문장을 실제로 받아들이는지와
+    /// 카탈로그 조회가 맞는 제약을 집어내는지는 여기서만 드러난다.
+    #[tokio::test]
+    #[ignore]
+    async fn alter_column_type_default_and_rename() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.alt_test') IS NOT NULL DROP TABLE dbo.alt_test")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.alt_test (id INT NOT NULL, age INT NULL, flag INT NULL)")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.alt_test VALUES (1, 10, 0)")
+            .await
+            .expect("insert");
+
+        let table = TableRef {
+            database: Some("master".into()),
+            schema: Some("dbo".into()),
+            name: "alt_test".into(),
+        };
+
+        // DDL 이 실제로 반영됐는지는 서버에서 다시 읽어야만 알 수 있다.
+        macro_rules! fetch {
+            ($name:expr) => {
+                d.list_columns(&table)
+                    .await
+                    .expect("컬럼 조회")
+                    .into_iter()
+                    .find(|c| c.name == $name)
+            };
+        }
+
+        // (1) 타입 + NULL 은 SQL Server 에서 한 문장으로 나간다.
+        let plan = d
+            .apply_alter_column(
+                &table,
+                "age",
+                &ColumnChange {
+                    db_type: Some("BIGINT".into()),
+                    nullable: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("타입+NULL 변경");
+        println!("[타입+NULL] {:?}", plan.statements);
+        let age = fetch!("age").expect("age 컬럼");
+        assert!(
+            age.db_type.eq_ignore_ascii_case("bigint"),
+            "타입이 바뀌지 않았다: {}",
+            age.db_type
+        );
+        assert!(!age.nullable, "NOT NULL 이 걸리지 않았다");
+
+        // (2) 기본값 신규 설정 — 뗄 제약이 없으니 ADD 한 문장.
+        let plan = d
+            .apply_alter_column(
+                &table,
+                "flag",
+                &ColumnChange {
+                    set_default: true,
+                    default: Some("7".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("기본값 설정");
+        println!("[기본값 설정] {:?}", plan.statements);
+        assert_eq!(
+            plan.statements.len(),
+            1,
+            "기존 제약이 없으면 ADD 하나뿐이다"
+        );
+        let flag = fetch!("flag").expect("flag 컬럼");
+        assert!(
+            flag.default.as_deref().unwrap_or("").contains('7'),
+            "기본값이 반영되지 않았다: {:?}",
+            flag.default
+        );
+
+        // (3) 기본값 교체 — 여기서 `default_constraint_name` 이 기존 제약을 찾아내야 한다.
+        //     못 찾으면 ADD 만 나가고 서버가 "이미 제약이 있다"로 거부한다.
+        let plan = d
+            .apply_alter_column(
+                &table,
+                "flag",
+                &ColumnChange {
+                    set_default: true,
+                    default: Some("9".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("기본값 교체");
+        println!("[기본값 교체] {:?}", plan.statements);
+        assert_eq!(
+            plan.statements.len(),
+            2,
+            "기존 제약을 떼고 다시 붙여야 한다"
+        );
+        assert!(
+            plan.statements[0].contains("DROP CONSTRAINT"),
+            "DROP 이 먼저가 아니다: {:?}",
+            plan.statements
+        );
+        let flag = fetch!("flag").expect("flag 컬럼");
+        assert!(
+            flag.default.as_deref().unwrap_or("").contains('9'),
+            "교체된 기본값이 반영되지 않았다: {:?}",
+            flag.default
+        );
+
+        // (4) 기본값 제거.
+        let plan = d
+            .apply_alter_column(
+                &table,
+                "flag",
+                &ColumnChange {
+                    set_default: true,
+                    default: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("기본값 제거");
+        println!("[기본값 제거] {:?}", plan.statements);
+        assert!(
+            fetch!("flag").expect("flag 컬럼").default.is_none(),
+            "기본값이 남아 있다"
+        );
+
+        // (5) 타입과 이름을 함께 바꾼다. 이름 변경은 **마지막**이어야 한다 —
+        //     앞 문장이 아직 옛 이름을 참조하기 때문.
+        let plan = d
+            .apply_alter_column(
+                &table,
+                "age",
+                &ColumnChange {
+                    new_name: Some("age_years".into()),
+                    db_type: Some("INT".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("타입+이름 변경");
+        println!("[타입+이름] {:?}", plan.statements);
+        assert!(
+            plan.statements.last().expect("문장").contains("sp_rename"),
+            "이름 변경이 마지막 문장이 아니다: {:?}",
+            plan.statements
+        );
+        assert!(fetch!("age").is_none(), "옛 이름이 남아 있다");
+        let renamed = fetch!("age_years").expect("새 이름 컬럼");
+        assert!(
+            renamed.db_type.eq_ignore_ascii_case("int"),
+            "타입이 바뀌지 않았다: {}",
+            renamed.db_type
+        );
+        // 지정하지 않은 속성은 유지된다 — (1)에서 건 NOT NULL 이 풀리면 안 된다.
+        assert!(!renamed.nullable, "건드리지 않은 NULL 속성이 풀렸다");
+    }
+
+    /// 데이터·이름 충돌은 DDL 을 실행하기 전에 막아야 한다.
+    #[tokio::test]
+    #[ignore]
+    async fn alter_column_blocked_by_data_and_name_clash() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.alt_bad') IS NOT NULL DROP TABLE dbo.alt_bad")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.alt_bad (a INT NULL, b INT NULL)")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.alt_bad VALUES (NULL, 1)")
+            .await
+            .expect("insert");
+
+        let table = TableRef {
+            database: Some("master".into()),
+            schema: Some("dbo".into()),
+            name: "alt_bad".into(),
+        };
+        let to_not_null = ColumnChange {
+            nullable: Some(false),
+            ..Default::default()
+        };
+
+        let plan = d
+            .plan_alter_column(&table, "a", &to_not_null)
+            .await
+            .expect("plan");
+        println!("[NULL 차단] {:?}", plan.blockers);
+        assert!(plan.blockers.iter().any(|b| b.contains("NULL")));
+
+        let clash = d
+            .plan_alter_column(
+                &table,
+                "a",
+                &ColumnChange {
+                    new_name: Some("b".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("plan");
+        println!("[이름 충돌] {:?}", clash.blockers);
+        assert!(clash.blockers.iter().any(|b| b.contains("이미 있습니다")));
+
+        // 차단 상태에서 적용하면 DDL 이 실행되지 않아야 한다.
+        assert!(d
+            .apply_alter_column(&table, "a", &to_not_null)
+            .await
+            .is_err());
+        let a = d
+            .list_columns(&table)
+            .await
+            .expect("컬럼")
+            .into_iter()
+            .find(|c| c.name == "a")
+            .expect("a 컬럼");
+        assert!(a.nullable, "차단됐는데 컬럼이 바뀌었다");
+    }
 }
