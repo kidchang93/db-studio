@@ -60,6 +60,36 @@ function displayValue(v: Cell): string {
   return String(v);
 }
 
+/**
+ * 집계용 숫자 변환.
+ *
+ * NUMERIC·BIGINT 는 정밀도 보존 때문에 **문자열로 내려오므로**(`docs/DESIGN.md` §4)
+ * 문자열도 받아야 한다. 숫자로 볼 수 없으면 null 이라 집계에서 빠진다.
+ * boolean 은 일부러 제외한다 — true/false 를 1/0 으로 더하면 오해를 부른다.
+ */
+function toNumber(v: Cell): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** 집계 값 표시. 긴 소수는 자르고, 배정밀도로 정확할 수 없는 크기는 근사임을 밝힌다. */
+function formatAgg(n: number): string {
+  if (!Number.isFinite(n)) return "-";
+  const approx = Math.abs(n) > Number.MAX_SAFE_INTEGER ? "≈" : "";
+  return (
+    approx +
+    (Number.isInteger(n)
+      ? n.toLocaleString()
+      : n.toLocaleString(undefined, { maximumFractionDigits: 4 }))
+  );
+}
+
 function coerce(input: string, lt: LogicalType): Cell {
   if (input === "") return null;
   switch (lt) {
@@ -165,6 +195,34 @@ export function DataGridTab({ connId, table }: Props) {
   /** 두 칸 이상 선택됐을 때만 범위를 칠한다(1×1 은 커서 테두리로 충분). */
   const multiRange =
     range && (range.r1 !== range.r2 || range.c1 !== range.c2) ? range : null;
+
+  /**
+   * 선택 범위의 숫자 셀 집계(합계·평균·최소·최대).
+   *
+   * 서버에 다시 묻지 않고 **화면에 보이는 값**을 그대로 센다 — 편집 중인 값도
+   * 반영되어야 하고(`cellValue`), 페이지 밖은 애초에 선택할 수 없다.
+   * 숫자가 하나도 없으면 null 이라 아무것도 표시하지 않는다.
+   */
+  const aggregate = useMemo(() => {
+    if (!multiRange) return null;
+    let count = 0;
+    let sum = 0;
+    let min = Infinity;
+    let max = -Infinity;
+    for (let r = multiRange.r1; r <= multiRange.r2; r++) {
+      for (let c = multiRange.c1; c <= multiRange.c2; c++) {
+        const n = toNumber(cellValue(r, columns[c].name));
+        if (n === null) continue;
+        count++;
+        sum += n;
+        if (n < min) min = n;
+        if (n > max) max = n;
+      }
+    }
+    return count > 0 ? { count, sum, avg: sum / count, min, max } : null;
+    // cellValue 는 매 렌더 새로 만들어지므로 그 입력(rows·edits·columns)을 의존성으로 둔다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multiRange, columns, rows, edits]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -713,6 +771,17 @@ export function DataGridTab({ connId, table }: Props) {
                   multiRange.c2 - multiRange.c1 + 1
                 }열 선택`
               : `${offset + cursor.row + 1}행 · ${columns[cursor.col].name}`}
+          </span>
+        )}
+
+        {aggregate && (
+          <span
+            className="muted mono cursor-pos"
+            title={`숫자 ${aggregate.count}개 · 최소 ${formatAgg(
+              aggregate.min,
+            )} · 최대 ${formatAgg(aggregate.max)}`}
+          >
+            합계 {formatAgg(aggregate.sum)} · 평균 {formatAgg(aggregate.avg)}
           </span>
         )}
 
