@@ -16,7 +16,8 @@ import { useUiStore } from "../../store/uiStore";
 import { useHistoryStore } from "../../store/historyStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { QueryHistory } from "./QueryHistory";
-import { normalizeSmartQuotes } from "../../lib/sqlText";
+import { normalizeSmartQuotes, scanSqlText } from "../../lib/sqlText";
+import { Modal } from "../../components/Modal";
 
 /** 히스토리에 남길 오류 요약 — 첫 줄만 짧게. */
 function errorLine(e: unknown): string {
@@ -45,6 +46,10 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const [exec, setExec] = useState<ExecResult | null>(null);
   const [running, setRunning] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** N 접두사 경고 대기 중인 실행. 확인을 받으면 `proceed` 를 부른다. */
+  const [nWarn, setNWarn] = useState<{ literals: string[]; proceed: () => void } | null>(
+    null,
+  );
   const addHistory = useHistoryStore((s) => s.add);
   const connName = useConnectionStore((s) => s.connections[connId]?.name ?? connId);
 
@@ -66,6 +71,24 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [tabId]);
+
+  /**
+   * 실행 전 안전장치: SQL Server 에서 `N` 이 빠진 비ASCII 리터럴로 **쓰기**를 하려 하면 먼저 묻는다.
+   *
+   * `'한글'` 은 DB 기본 collation 의 코드페이지로 해석되어, 그 코드페이지에 없는 문자는
+   * `?` 로 바뀌어 저장된다(컬럼이 NVARCHAR 여도 마찬가지). 원문이 남지 않아 되돌릴 수 없다.
+   * 조회는 묻지 않는다 — 결과가 안 맞는 것은 즉시 드러나고, 매번 묻는 편이 더 해롭다.
+   */
+  function guarded(exec: () => void) {
+    if (kind === "mssql") {
+      const scan = scanSqlText(text);
+      if (scan.writes && scan.unprefixed.length > 0) {
+        setNWarn({ literals: scan.unprefixed, proceed: exec });
+        return;
+      }
+    }
+    exec();
+  }
 
   async function run() {
     setRunning(true);
@@ -117,10 +140,20 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   return (
     <div className="query-tab">
       <div className="query-toolbar">
-          <button className="btn sm primary" onClick={run} disabled={running} title="Ctrl/Cmd+Enter">
+          <button
+            className="btn sm primary"
+            onClick={() => guarded(run)}
+            disabled={running}
+            title="Ctrl/Cmd+Enter"
+          >
             <Play size={13} /> 실행
           </button>
-          <button className="btn sm" onClick={runScript} disabled={running} title="DDL/다중 문장">
+          <button
+            className="btn sm"
+            onClick={() => guarded(runScript)}
+            disabled={running}
+            title="DDL/다중 문장"
+          >
             <ScrollText size={13} /> 스크립트 실행
           </button>
           <button
@@ -145,7 +178,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                   e.preventDefault();
-                  run();
+                  guarded(run);
                 }
               }}
             >
@@ -186,6 +219,51 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
             </div>
           </Panel>
         </PanelGroup>
+
+        {nWarn && (
+          <Modal
+            title="N 접두사 없는 문자열이 있습니다"
+            onClose={() => setNWarn(null)}
+            footer={
+              <>
+                <button className="btn" onClick={() => setNWarn(null)}>
+                  취소
+                </button>
+                <button
+                  className="btn primary"
+                  onClick={() => {
+                    const go = nWarn.proceed;
+                    setNWarn(null);
+                    go();
+                  }}
+                >
+                  그대로 실행
+                </button>
+              </>
+            }
+          >
+            <p>
+              SQL Server 는 <code>'…'</code> 를 <b>DB 기본 collation 의 코드페이지</b>로
+              해석합니다. 그 코드페이지에 없는 문자는 <code>?</code> 로 바뀌어 저장되며,
+              <b> 컬럼이 NVARCHAR 여도 마찬가지</b>입니다. 원문이 남지 않아 되돌릴 수 없습니다.
+            </p>
+            <p className="muted" style={{ marginTop: 8 }}>
+              앞에 <code>N</code> 을 붙이면 유니코드로 전달됩니다:
+            </p>
+            <ul style={{ margin: "6px 0 0 18px" }}>
+              {nWarn.literals.slice(0, 8).map((s) => (
+                <li key={s} className="mono" style={{ fontSize: 12 }}>
+                  <code>'{s}'</code> → <code>N'{s}'</code>
+                </li>
+              ))}
+            </ul>
+            {nWarn.literals.length > 8 && (
+              <p className="muted" style={{ marginTop: 6 }}>
+                외 {nWarn.literals.length - 8}건
+              </p>
+            )}
+          </Modal>
+        )}
     </div>
   );
 }

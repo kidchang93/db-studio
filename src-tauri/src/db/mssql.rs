@@ -1151,4 +1151,89 @@ mod tests {
             .expect("a 컬럼");
         assert!(a.nullable, "차단됐는데 컬럼이 바뀌었다");
     }
+
+    /// 한글 문자열이 collation 과 `N` 접두사에 따라 어떻게 저장·조회되는지 고정한다.
+    ///
+    /// 운영에서 department 컬럼이 통째로 `?` 로 보이던 사고의 원인을 박아 둔다.
+    /// 원인은 드라이버가 아니라 **INSERT 리터럴에 `N` 이 없었던 것**이었다.
+    #[tokio::test]
+    #[ignore]
+    async fn korean_text_by_collation_and_n_prefix() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        let cell = |r: &QueryResult, name: &str, row: usize| -> String {
+            let i = r.columns.iter().position(|c| c.name == name).expect("컬럼");
+            r.rows[row][i].as_str().unwrap_or_default().to_string()
+        };
+
+        // --- 1) 컬럼 collation 별 조회 ---
+        // UTF-8 collation 은 2019+ 전용이라 버전 무관한 것만 쓴다.
+        d.simple_rows("IF OBJECT_ID('dbo.kr_test') IS NOT NULL DROP TABLE dbo.kr_test")
+            .await
+            .expect("drop");
+        d.simple_rows(
+            "CREATE TABLE dbo.kr_test ( \
+               v_kr  VARCHAR(50) COLLATE Korean_Wansung_CI_AS, \
+               v_lat VARCHAR(50) COLLATE SQL_Latin1_General_CP1_CI_AS, \
+               nv    NVARCHAR(50), \
+               txt   TEXT COLLATE Korean_Wansung_CI_AS )",
+        )
+        .await
+        .expect("create");
+        d.simple_rows(
+            "INSERT INTO dbo.kr_test VALUES (N'영업부', N'영업부', N'영업부', N'영업부')",
+        )
+        .await
+        .expect("insert");
+
+        let r = d
+            .run_query("SELECT * FROM dbo.kr_test", 10)
+            .await
+            .expect("조회");
+        // 한국어 collation 의 varchar 는 드라이버가 코드페이지로 바르게 디코딩한다.
+        assert_eq!(cell(&r, "v_kr", 0), "영업부");
+        assert_eq!(cell(&r, "nv", 0), "영업부");
+        assert_eq!(cell(&r, "txt", 0), "영업부");
+        // 한글을 담을 수 없는 collation 은 저장 시점에 이미 손실된다(조회 문제가 아니다).
+        assert_eq!(cell(&r, "v_lat", 0), "???");
+
+        // --- 2) N 접두사 유무 ---
+        d.simple_rows("IF OBJECT_ID('dbo.n_test') IS NOT NULL DROP TABLE dbo.n_test")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.n_test (tag VARCHAR(10), nv NVARCHAR(50))")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.n_test VALUES ('with_n', N'영업부')")
+            .await
+            .expect("insert N");
+        d.simple_rows("INSERT INTO dbo.n_test VALUES ('no_n', '영업부')")
+            .await
+            .expect("insert no-N");
+
+        let r = d
+            .run_query("SELECT tag, nv FROM dbo.n_test ORDER BY tag", 10)
+            .await
+            .expect("조회");
+        assert_eq!(cell(&r, "nv", 1), "영업부", "N 을 붙이면 정상이어야 한다");
+        // 컬럼이 NVARCHAR 인데도 죽는다 — 리터럴이 DB 기본 collation 으로 해석되기 때문.
+        // (이 서버의 기본 collation 이 한글을 담을 수 있으면 이 단언은 성립하지 않는다)
+        let db_collation = d
+            .run_query(
+                "SELECT CONVERT(NVARCHAR(128), DATABASEPROPERTYEX(DB_NAME(),'Collation')) AS c",
+                1,
+            )
+            .await
+            .expect("collation");
+        let coll = db_collation.rows[0][0]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if coll.contains("Latin1") {
+            assert_eq!(
+                cell(&r, "nv", 0),
+                "???",
+                "기본 collation 이 {coll} 인데 N 없는 리터럴이 살아남았다"
+            );
+        }
+    }
 }

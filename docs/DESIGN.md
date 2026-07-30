@@ -39,6 +39,11 @@
 - **식별자**(테이블/컬럼/스키마명)는 값 바인딩이 불가하므로 DB별 규칙으로 quoting: Postgres/SQLite `"ident"`, MySQL `` `ident` ``, SQL Server `[ident]`. 내부 따옴표는 이스케이프. 이 로직은 driver별 `quote_ident`로 캡슐화.
 - 그리드 CRUD가 생성하는 `UPDATE/DELETE`는 **PK(또는 유니크 키) 기반 WHERE**만 사용. PK가 없는 테이블은 편집을 막고 안내(전체행 매칭 위험 회피).
 - 사용자가 직접 작성한 SQL 에디터 쿼리는 그대로 실행하되(신뢰 경계는 사용자 자신), 다중 문장·DDL 실행 시 확인 단계를 둔다.
+- **SQL Server 에서 `N` 접두사가 빠진 비ASCII 리터럴로 쓰기를 실행하려 하면 먼저 확인받는다**(`src/lib/sqlText.ts` 의 `scanSqlText` → `QueryTab` 의 확인 대화상자). `'영업부'` 는 **DB 기본 collation 의 코드페이지**로 해석되어, 그 코드페이지에 한글이 없으면 서버에 닿기도 전에 `?`(0x3F)로 바뀐다. **컬럼이 NVARCHAR 여도 리터럴 단계에서 이미 죽으므로** 컬럼 타입으로는 막을 수 없다. 원문이 남지 않아 되돌릴 수 없다.
+  - 스마트 인용부호와 달리 **자동으로 고치지 않는다** — 임의로 `N` 을 붙이면 사용자가 의도한 비유니코드 비교/저장을 바꿔 버릴 수 있다. 실행 여부는 사용자가 정한다.
+  - **쓰기(INSERT·UPDATE·MERGE)만 막고 조회는 묻지 않는다.** 조회는 리터럴이 깨져도 결과가 안 맞는 것이 즉시 드러나고 손실이 없다. 매 조회마다 묻는 편이 더 해롭다.
+  - 그리드 인라인 편집은 **파라미터 바인딩**으로 나가므로(`ColumnData::String` → NVARCHAR) 이 문제가 없다. 위험한 것은 사용자가 콘솔에 직접 쓴 SQL 뿐이다.
+  - 회귀 테스트: `src-tauri/src/db/mssql.rs` 의 `korean_text_by_collation_and_n_prefix`.
 - 사용자가 SQL을 입력하는 곳(SQL 에디터, 그리드 WHERE 필터 바)은 **입력 시점에 스마트 인용부호를 ASCII 따옴표로 정규화**한다(`src/lib/sqlText.ts`의 `normalizeSmartQuotes`). macOS 가 `'` 를 `‘`(U+2018)로 자동 변환하면 DB 가 문자열 구분자로 인식하지 못해 구문 오류가 난다(SQL Server 102). 입력창 값 자체를 바꾸므로 사용자도 화면에서 정규화 결과를 확인할 수 있다.
 
 ## 6. CRUD 편집 모델 (그리드)
