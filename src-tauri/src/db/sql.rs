@@ -513,6 +513,9 @@ pub fn build_insert(
     })
 }
 
+/// `pk` 는 **행을 식별하는 컬럼-값 맵**이다. 기본 키가 있으면 그 컬럼들이,
+/// 없으면 프론트가 넣어 보낸 모든 컬럼의 원본 값이 들어온다. 후자는 행이 유일하다는
+/// 보장이 없으므로 실행 후 반드시 [`ensure_single_row`] 로 확인해야 한다.
 pub fn build_update(
     d: &Dialect,
     table: &TableRef,
@@ -521,7 +524,7 @@ pub fn build_update(
 ) -> Result<Built> {
     if pk.is_empty() {
         return Err(AppError::Validation(
-            "PK 가 없어 UPDATE 를 만들 수 없습니다".into(),
+            "행을 식별할 값이 없어 UPDATE 를 만들 수 없습니다".into(),
         ));
     }
     if changes.is_empty() {
@@ -543,10 +546,11 @@ pub fn build_update(
     })
 }
 
+/// `pk` 의 의미는 [`build_update`] 와 같다.
 pub fn build_delete(d: &Dialect, table: &TableRef, pk: &BTreeMap<String, Value>) -> Result<Built> {
     if pk.is_empty() {
         return Err(AppError::Validation(
-            "PK 가 없어 DELETE 를 만들 수 없습니다".into(),
+            "행을 식별할 값이 없어 DELETE 를 만들 수 없습니다".into(),
         ));
     }
     let qtable = d.qualify(table);
@@ -557,6 +561,28 @@ pub fn build_delete(d: &Dialect, table: &TableRef, pk: &BTreeMap<String, Value>)
         sql: format!("DELETE FROM {qtable} WHERE {where_sql}"),
         params,
     })
+}
+
+/// UPDATE/DELETE 가 **정확히 한 행만** 건드렸는지 확인한다.
+///
+/// 기본 키가 있는 테이블은 항상 1이므로 사실상 무비용 검사다. 문제는 기본 키가 없어
+/// **컬럼 값 조합으로 행을 찾는** 경우다 — 같은 값의 행이 여럿이면 한 번에 다 바뀐다.
+/// 되돌릴 수 없는 변경이므로 그 자리에서 오류를 내 트랜잭션째 취소시킨다.
+///
+/// 0 행이면 보고 있던 행이 이미 사라졌거나 값이 바뀐 것이라, 조용히 넘기지 않고 알린다.
+pub fn ensure_single_row(what: &str, affected: u64) -> Result<()> {
+    match affected {
+        1 => Ok(()),
+        0 => Err(AppError::Validation(format!(
+            "{what} 대상 행을 찾지 못했습니다. 그사이 다른 곳에서 바뀌었을 수 있습니다 — \
+             새로고침 후 다시 시도하세요"
+        ))),
+        n => Err(AppError::Validation(format!(
+            "{what} 조건에 {n}개 행이 걸려 전체를 취소했습니다. 이 테이블은 기본 키가 없어 \
+             값으로 행을 찾는데, 값이 완전히 같은 행이 여럿입니다. \
+             구조 뷰에서 기본 키를 지정하면 정확히 한 행만 편집할 수 있습니다"
+        ))),
+    }
 }
 
 fn build_pk_where(

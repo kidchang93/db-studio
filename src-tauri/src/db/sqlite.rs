@@ -222,7 +222,11 @@ impl Driver for SqliteDriver {
                 for p in &b.params {
                     q = bind_json!(q, p);
                 }
-                res.deleted += q.execute(&mut *tx).await?.rows_affected();
+                let n = q.execute(&mut *tx).await?.rows_affected();
+                // 기본 키가 없으면 값 조합으로 행을 찾으므로 여러 행이 걸릴 수 있다.
+                // 그때는 `?` 로 빠져나가며 tx 가 drop 되어 통째로 롤백된다.
+                sql::ensure_single_row("삭제", n)?;
+                res.deleted += n;
             }
         }
         for edit in &req.edits {
@@ -232,7 +236,11 @@ impl Driver for SqliteDriver {
                 for p in &b.params {
                     q = bind_json!(q, p);
                 }
-                res.updated += q.execute(&mut *tx).await?.rows_affected();
+                let n = q.execute(&mut *tx).await?.rows_affected();
+                // 기본 키가 없으면 값 조합으로 행을 찾으므로 여러 행이 걸릴 수 있다.
+                // 그때는 `?` 로 빠져나가며 tx 가 drop 되어 통째로 롤백된다.
+                sql::ensure_single_row("수정", n)?;
+                res.updated += n;
             }
         }
         for edit in &req.edits {
@@ -492,5 +500,119 @@ mod tests {
             .unwrap();
         assert_eq!(page.result.rows.len(), 2);
         assert_eq!(page.total_rows, Some(2));
+    }
+
+    /// 기본 키가 없는 테이블도 편집할 수 있다. 행은 **컬럼 값 조합**으로 찾는다.
+    ///
+    /// 값이 같은 행이 여럿이면 한 번에 다 바뀌므로, 그때는 통째로 롤백되어야 한다.
+    /// 되돌릴 수 없는 변경을 막는 유일한 방어선이라 반드시 고정해 둔다.
+    #[tokio::test]
+    async fn edit_without_primary_key() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // PK 가 없는 테이블. dup 두 행은 모든 값이 같다.
+        sqlx::query("CREATE TABLE nopk (name TEXT, age INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nopk VALUES ('alice', 30), ('dup', 1), ('dup', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let d = SqliteDriver::from_pool(pool);
+        let t = TableRef {
+            database: None,
+            schema: None,
+            name: "nopk".into(),
+        };
+        assert!(
+            d.primary_keys(&t).await.unwrap().is_empty(),
+            "PK 가 없어야 한다"
+        );
+
+        let key = |name: &str, age: i64| {
+            let mut m = BTreeMap::new();
+            m.insert("name".to_string(), Value::from(name));
+            m.insert("age".to_string(), Value::from(age));
+            m
+        };
+        let apply = |edits: Vec<RowEdit>| {
+            let t = t.clone();
+            let d = &d;
+            async move {
+                d.apply_changes(&ApplyChangesRequest {
+                    conn_id: "t".into(),
+                    table: t,
+                    edits,
+                })
+                .await
+            }
+        };
+
+        // 유일한 행은 값 조합만으로 수정된다.
+        let mut ch = BTreeMap::new();
+        ch.insert("age".to_string(), Value::from(31));
+        let res = apply(vec![RowEdit::Update {
+            pk: key("alice", 30),
+            changes: ch,
+        }])
+        .await
+        .expect("유일한 행은 수정돼야 한다");
+        assert_eq!(res.updated, 1);
+
+        // 값이 같은 행이 둘이면 막고 되돌린다.
+        let mut ch = BTreeMap::new();
+        ch.insert("age".to_string(), Value::from(99));
+        let err = apply(vec![RowEdit::Update {
+            pk: key("dup", 1),
+            changes: ch,
+        }])
+        .await
+        .expect_err("중복 행은 막아야 한다");
+        assert!(err.to_string().contains("2개 행"), "메시지: {err}");
+
+        // 삭제도 마찬가지.
+        let err = apply(vec![RowEdit::Delete { pk: key("dup", 1) }])
+            .await
+            .expect_err("중복 행 삭제는 막아야 한다");
+        assert!(err.to_string().contains("2개 행"), "메시지: {err}");
+
+        // 막힌 뒤 데이터가 그대로인지 — 롤백이 실제로 됐는지 확인한다.
+        let page = d
+            .fetch_page(&FetchPageRequest {
+                conn_id: "t".into(),
+                table: t.clone(),
+                limit: 100,
+                offset: 0,
+                sort: vec![],
+                filters: vec![],
+                filter_sql: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total_rows, Some(3), "삭제가 새어 나갔다");
+        let ages: Vec<i64> = page
+            .result
+            .rows
+            .iter()
+            .map(|r| r[1].as_i64().unwrap_or(-1))
+            .collect();
+        assert_eq!(
+            ages.iter().filter(|a| **a == 1).count(),
+            2,
+            "dup 행이 바뀌었다"
+        );
+        assert!(ages.contains(&31), "정상 수정이 반영되지 않았다");
+
+        // 사라진 행을 가리키면 알려 준다(조용히 넘기지 않는다).
+        let err = apply(vec![RowEdit::Delete {
+            pk: key("ghost", 7),
+        }])
+        .await
+        .expect_err("없는 행은 오류여야 한다");
+        assert!(err.to_string().contains("찾지 못했습니다"), "메시지: {err}");
     }
 }

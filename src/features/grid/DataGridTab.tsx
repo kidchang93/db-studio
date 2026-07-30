@@ -170,13 +170,25 @@ export function DataGridTab({ connId, table }: Props) {
   );
   const rows = page?.result.rows ?? [];
   const pks = page?.primaryKeys ?? [];
-  const editable = pks.length > 0;
+  /**
+   * 기본 키가 없어도 편집을 연다. 행 식별은 모든 컬럼의 원본 값으로 하고,
+   * 값이 같은 행이 여럿이면 백엔드가 커밋을 통째로 취소한다(`sql::ensure_single_row`).
+   */
+  const editable = allColumns.length > 0;
+  /** 기본 키 없이 값으로 행을 찾는 상태 — 한계를 사용자에게 알려야 한다. */
+  const byValues = editable && pks.length === 0;
 
+  /**
+   * 컬럼명 → `rows` 안의 위치.
+   *
+   * `rows` 는 **숨김과 무관하게** 서버가 준 전체 컬럼 순서다. 화면용 `columns`(숨김 제외)로
+   * 인덱스를 만들면 컬럼을 하나라도 숨긴 순간 값이 밀려 읽힌다.
+   */
   const colIndex = useMemo(() => {
     const m: Record<string, number> = {};
-    columns.forEach((c, i) => (m[c.name] = i));
+    allColumns.forEach((c, i) => (m[c.name] = i));
     return m;
-  }, [columns]);
+  }, [allColumns]);
 
   const pendingCount =
     Object.keys(edits).length + deleted.size + inserts.length;
@@ -337,6 +349,23 @@ export function DataGridTab({ connId, table }: Props) {
     return rows[rowIdx][colIndex[colName]];
   }
 
+  /**
+   * UPDATE/DELETE 의 WHERE 에 쓸 행 식별 값.
+   *
+   * 기본 키가 있으면 그 컬럼만, 없으면 모든 컬럼의 **원본**(편집 전) 값을 쓴다 —
+   * DB 에 지금 들어 있는 행과 맞아야 하기 때문이다.
+   * 바이너리 컬럼은 `=` 비교가 부적합하거나 DB 가 아예 거부하므로 뺀다.
+   */
+  function rowKey(rowIdx: number): Record<string, Cell> {
+    const names =
+      pks.length > 0
+        ? pks
+        : allColumns.filter((c) => c.logicalType !== "bytes").map((c) => c.name);
+    const key: Record<string, Cell> = {};
+    for (const k of names) key[k] = rows[rowIdx][colIndex[k]];
+    return key;
+  }
+
   function setExistingCell(rowIdx: number, colName: string, value: Cell) {
     setEdits((prev) => {
       const original = rows[rowIdx][colIndex[colName]];
@@ -427,15 +456,11 @@ export function DataGridTab({ connId, table }: Props) {
     for (const [idxStr, changes] of Object.entries(edits)) {
       const rowIdx = Number(idxStr);
       if (deleted.has(rowIdx)) continue; // 삭제될 행은 갱신 생략
-      const pk: Record<string, Cell> = {};
-      for (const k of pks) pk[k] = rows[rowIdx][colIndex[k]];
-      editsList.push({ type: "update", pk, changes });
+      editsList.push({ type: "update", pk: rowKey(rowIdx), changes });
     }
     // DELETE
     for (const rowIdx of deleted) {
-      const pk: Record<string, Cell> = {};
-      for (const k of pks) pk[k] = rows[rowIdx][colIndex[k]];
-      editsList.push({ type: "delete", pk });
+      editsList.push({ type: "delete", pk: rowKey(rowIdx) });
     }
     // INSERT — null 뿐인 컬럼은 제외해 DB 기본값이 적용되게 한다.
     for (const ins of inserts) {
@@ -682,7 +707,7 @@ export function DataGridTab({ connId, table }: Props) {
           className="btn sm"
           onClick={addInsertRow}
           disabled={!editable}
-          title={editable ? "행 추가" : "PK 가 없어 편집 불가"}
+          title={editable ? "행 추가" : "컬럼 정보가 없어 편집 불가"}
         >
           <Plus size={13} /> 행 추가
         </button>
@@ -692,7 +717,7 @@ export function DataGridTab({ connId, table }: Props) {
           disabled={!editable || !cursor}
           title={
             !editable
-              ? "PK 가 없어 편집 불가"
+              ? "컬럼 정보가 없어 편집 불가"
               : cursor
                 ? "커서 행 복제 (⌘/Ctrl+D)"
                 : "복제할 행을 선택하세요"
@@ -916,9 +941,11 @@ export function DataGridTab({ connId, table }: Props) {
         </button>
       </div>
 
-      {!editable && page && (
+      {byValues && page && (
         <div className="grid-toolbar" style={{ color: "var(--warning)" }}>
-          <Ban size={13} /> 이 테이블은 기본 키가 없어 읽기 전용입니다.
+          <Ban size={13} /> 기본 키가 없어 <b>모든 컬럼 값</b>으로 행을 찾습니다. 값이 완전히
+          같은 행이 여럿이면 커밋이 통째로 취소됩니다 — 구조 뷰에서 기본 키를 지정하면
+          안전해집니다.
         </div>
       )}
 

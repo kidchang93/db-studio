@@ -278,7 +278,11 @@ impl Driver for MysqlDriver {
                 for p in &b.params {
                     q = bind_json!(q, p);
                 }
-                res.deleted += q.execute(&mut *tx).await?.rows_affected();
+                let n = q.execute(&mut *tx).await?.rows_affected();
+                // 기본 키가 없으면 값 조합으로 행을 찾으므로 여러 행이 걸릴 수 있다.
+                // 그때는 `?` 로 빠져나가며 tx 가 drop 되어 통째로 롤백된다.
+                sql::ensure_single_row("삭제", n)?;
+                res.deleted += n;
             }
         }
         for edit in &req.edits {
@@ -288,7 +292,11 @@ impl Driver for MysqlDriver {
                 for p in &b.params {
                     q = bind_json!(q, p);
                 }
-                res.updated += q.execute(&mut *tx).await?.rows_affected();
+                let n = q.execute(&mut *tx).await?.rows_affected();
+                // 기본 키가 없으면 값 조합으로 행을 찾으므로 여러 행이 걸릴 수 있다.
+                // 그때는 `?` 로 빠져나가며 tx 가 drop 되어 통째로 롤백된다.
+                sql::ensure_single_row("수정", n)?;
+                res.updated += n;
             }
         }
         for edit in &req.edits {

@@ -552,6 +552,19 @@ impl Driver for MssqlDriver {
             match guard.execute(b.sql.as_str(), &refs).await {
                 Ok(er) => {
                     let n = er.total();
+                    // 기본 키가 없으면 값 조합으로 행을 찾으므로 여러 행이 걸릴 수 있다.
+                    // 이 드라이버는 트랜잭션을 직접 몰기 때문에 롤백도 손으로 보내야 한다.
+                    let check = match kind {
+                        'd' => sql::ensure_single_row("삭제", n),
+                        'u' => sql::ensure_single_row("수정", n),
+                        _ => Ok(()),
+                    };
+                    if let Err(e) = check {
+                        if let Ok(s) = guard.simple_query("ROLLBACK").await {
+                            let _ = s.into_results().await;
+                        }
+                        return Err(e);
+                    }
                     match kind {
                         'd' => res.deleted += n,
                         'u' => res.updated += n,
@@ -1150,6 +1163,69 @@ mod tests {
             .find(|c| c.name == "a")
             .expect("a 컬럼");
         assert!(a.nullable, "차단됐는데 컬럼이 바뀌었다");
+    }
+
+    /// 기본 키가 없는 테이블에서 값이 겹치면 커밋을 통째로 취소해야 한다.
+    ///
+    /// 이 드라이버는 트랜잭션을 직접 몰기 때문에 롤백도 손으로 보낸다. 그 경로가 새면
+    /// 되돌리지 못한 채 트랜잭션이 세션에 남아 이후 쿼리가 전부 깨진다(오류 266).
+    #[tokio::test]
+    #[ignore]
+    async fn edit_without_pk_rolls_back_without_leaking_transaction() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.nopk_test') IS NOT NULL DROP TABLE dbo.nopk_test")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.nopk_test (name NVARCHAR(20), age INT)")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.nopk_test VALUES (N'dup', 1), (N'dup', 1)")
+            .await
+            .expect("insert");
+
+        let table = TableRef {
+            database: Some("master".into()),
+            schema: Some("dbo".into()),
+            name: "nopk_test".into(),
+        };
+        let mut pk = BTreeMap::new();
+        pk.insert("name".to_string(), Value::from("dup"));
+        pk.insert("age".to_string(), Value::from(1));
+        let mut changes = BTreeMap::new();
+        changes.insert("age".to_string(), Value::from(99));
+
+        let err = d
+            .apply_changes(&ApplyChangesRequest {
+                conn_id: "t".into(),
+                table: table.clone(),
+                edits: vec![RowEdit::Update { pk, changes }],
+            })
+            .await
+            .expect_err("값이 겹치는 행은 막아야 한다");
+        println!("[차단] {err}");
+        assert!(err.to_string().contains("2개 행"), "메시지: {err}");
+
+        // 롤백 확인 — 값이 그대로여야 한다.
+        let rows = d
+            .simple_rows("SELECT COUNT(*) AS c FROM dbo.nopk_test WHERE age = 1")
+            .await
+            .expect("조회");
+        assert_eq!(
+            rows[0].try_get::<i32, _>("c").unwrap().unwrap(),
+            2,
+            "롤백되지 않아 행이 바뀌었다"
+        );
+
+        // 트랜잭션이 세션에 남지 않아야 한다.
+        let t = d
+            .simple_rows("SELECT @@TRANCOUNT AS n")
+            .await
+            .expect("trancount");
+        assert_eq!(
+            t[0].try_get::<i32, _>("n").unwrap().unwrap(),
+            0,
+            "트랜잭션이 세션에 남았다"
+        );
     }
 
     /// 한글 문자열이 collation 과 `N` 접두사에 따라 어떻게 저장·조회되는지 고정한다.

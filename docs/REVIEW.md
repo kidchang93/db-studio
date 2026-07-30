@@ -17,7 +17,7 @@
 - [ ] IPC 타입이 Rust `models.rs` ↔ TS `types/`에서 1:1 대응하는가(필드명·옵셔널·enum 값)?
 - [ ] 새/변경 command가 `lib.rs` `generate_handler!`와 `api/` 래퍼 양쪽에 반영됐는가?
 - [ ] DB 값 변환이 `value.rs`를 경유하며 정밀도 손실 위험 타입을 문자열로 보존하는가?
-- [ ] 그리드 CRUD의 `UPDATE/DELETE`가 PK/유니크 기반 WHERE만 쓰는가? PK 없는 테이블을 안전하게(읽기전용) 처리하는가?
+- [ ] 그리드 CRUD의 `UPDATE/DELETE`가 행을 하나로 특정하는 WHERE를 쓰는가? PK가 없어 값으로 찾는 경우 **영향 행 수 1을 검증하고 아니면 롤백**하는가(`ensure_single_row`)?
 - [ ] `apply_changes`가 트랜잭션으로 감싸지고 실패 시 롤백되는가?
 - [ ] 지연 로딩 경계(스키마 트리)가 지켜지는가(전체 트리 일괄 로드 아님)?
 
