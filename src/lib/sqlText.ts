@@ -155,3 +155,71 @@ export function scanSqlText(sql: string): SqlScan {
     writes: /\b(insert|update|merge)\b/i.test(bare),
   };
 }
+
+export interface SqlErrorSpot {
+  /** SQL 문자열 안의 0-based 오프셋. */
+  offset: number;
+  /** 사람이 읽는 1-based 위치. */
+  line: number;
+  col: number;
+  /** 강조 길이(토큰을 찾은 경우). 없으면 1. */
+  length: number;
+}
+
+/** 1-based 오프셋을 줄·열로 바꾼다. */
+function spotAt(sql: string, offset: number, length: number): SqlErrorSpot {
+  const clamped = Math.max(0, Math.min(offset, Math.max(0, sql.length - 1)));
+  const before = sql.slice(0, clamped);
+  const line = before.split("\n").length;
+  const col = clamped - (before.lastIndexOf("\n") + 1) + 1;
+  return { offset: clamped, line, col, length };
+}
+
+/**
+ * DB 오류 메시지에서 **구문 오류 지점**을 찾아낸다.
+ *
+ * DB 마다 주는 정보가 달라 있는 것부터 차례로 본다.
+ * - PostgreSQL: 문자 위치를 별도 필드로 준다(`error.rs` 가 "위치: N" 으로 붙여 둔다) — 가장 정확
+ * - SQL Server: 줄 번호만 준다(`on line N`)
+ * - MySQL·SQLite: 위치가 없고 `near '토큰'` 만 있어, 그 토큰을 본문에서 찾아 짚는다
+ *
+ * 어느 것도 못 찾으면 null 이고, 그때 화면은 메시지만 보여 준다 —
+ * **틀린 자리를 짚느니 안 짚는 편이 낫다.**
+ */
+export function findErrorSpot(sql: string, message: string): SqlErrorSpot | null {
+  // 1) PostgreSQL: 1-based 문자 위치
+  const pos = /위치:\s*(\d+)/.exec(message) ?? /\bPosition:\s*(\d+)/i.exec(message);
+  if (pos) {
+    const n = Number(pos[1]);
+    if (Number.isFinite(n) && n >= 1) {
+      const spot = spotAt(sql, n - 1, 1);
+      // 위치에 걸린 단어가 있으면 그 길이만큼 짚는다.
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(spot.offset));
+      return word ? { ...spot, length: word[0].length } : spot;
+    }
+  }
+
+  // 2) near '토큰' / near "토큰" — 본문에서 그 토큰을 찾는다.
+  const near = /near\s+['"]([^'"]+)['"]/i.exec(message);
+  if (near) {
+    const token = near[1];
+    const at = sql.indexOf(token);
+    if (at >= 0) return spotAt(sql, at, token.length);
+  }
+
+  // 3) SQL Server: 줄 번호만. 그 줄의 첫 글자를 짚는다.
+  const line = /\bline\s+(\d+)/i.exec(message);
+  if (line) {
+    const n = Number(line[1]);
+    if (Number.isFinite(n) && n >= 1) {
+      const lines = sql.split("\n");
+      if (n <= lines.length) {
+        const offset = lines.slice(0, n - 1).reduce((acc, l) => acc + l.length + 1, 0);
+        // 들여쓰기를 건너뛰어 실제 내용이 시작하는 곳을 짚는다.
+        const indent = /^\s*/.exec(lines[n - 1])?.[0].length ?? 0;
+        return spotAt(sql, offset + indent, Math.max(1, lines[n - 1].trim().length));
+      }
+    }
+  }
+  return null;
+}

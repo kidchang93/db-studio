@@ -89,6 +89,21 @@ impl From<sqlx::Error> for AppError {
             }
             sqlx::Error::Configuration(_) => AppError::Connection(e.to_string()),
             sqlx::Error::RowNotFound => AppError::NotFound(e.to_string()),
+            sqlx::Error::Database(db) => {
+                // PostgreSQL 은 구문 오류 위치를 **별도 필드**로 준다 — Display 에는 안 실린다.
+                // 화면에서 오류 지점을 짚어 주려면 여기서 꺼내 메시지에 붙여야 한다.
+                let pos = db
+                    .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                    .and_then(|pg| match pg.position() {
+                        Some(sqlx::postgres::PgErrorPosition::Original(p)) => Some(p),
+                        // 내부 생성 쿼리(PL/pgSQL 등)의 위치는 사용자가 쓴 SQL 과 맞지 않는다.
+                        _ => None,
+                    });
+                match pos {
+                    Some(p) => AppError::Query(format!("{db} (위치: {p})")),
+                    None => AppError::Query(db.to_string()),
+                }
+            }
             other => AppError::Query(other.to_string()),
         }
     }

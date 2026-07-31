@@ -1379,3 +1379,28 @@ table.grid tbody tr.selected td {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ===== SQL 구문 오류 표시 ===== */
+.sql-error {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--danger-bg);
+}
+.sql-error-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 10px;
+  font-size: 12px;
+  color: var(--danger);
+}
+.sql-error-msg {
+  margin: 0;
+  padding: 0 10px 8px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: auto;
+}

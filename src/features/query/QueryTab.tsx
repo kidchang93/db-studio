@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
-import CodeMirror, { EditorView } from "@uiw/react-codemirror";
+import { useEffect, useRef, useState } from "react";
+import CodeMirror, { EditorView, type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { History, Play, ScrollText } from "lucide-react";
+import { AlertTriangle, History, Play, ScrollText, X } from "lucide-react";
 import {
   Group as PanelGroup,
   Panel,
@@ -17,7 +17,13 @@ import { useHistoryStore } from "../../store/historyStore";
 import { useLogStore } from "../../store/logStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { QueryHistory } from "./QueryHistory";
-import { normalizeSmartQuotes, returnsRows, scanSqlText } from "../../lib/sqlText";
+import {
+  findErrorSpot,
+  normalizeSmartQuotes,
+  returnsRows,
+  scanSqlText,
+  type SqlErrorSpot,
+} from "../../lib/sqlText";
 import { Modal } from "../../components/Modal";
 
 /** 히스토리에 남길 오류 요약 — 첫 줄만 짧게. */
@@ -46,6 +52,11 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [exec, setExec] = useState<ExecResult | null>(null);
   const [running, setRunning] = useState(false);
+  /** 마지막 실행이 남긴 오류. 위치를 찾았으면 spot 이 붙는다. */
+  const [sqlError, setSqlError] = useState<{ message: string; spot: SqlErrorSpot | null } | null>(
+    null,
+  );
+  const editorRef = useRef<ReactCodeMirrorRef>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   /** N 접두사 경고 대기 중인 실행. 확인을 받으면 `proceed` 를 부른다. */
   const [nWarn, setNWarn] = useState<{ literals: string[]; proceed: () => void } | null>(
@@ -98,6 +109,28 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
    * DML·DDL 을 조회 경로로 보내면 결과셋이 없어 빈 표와 "0행 반환"만 남는다.
    * 정작 알아야 할 영향 행 수는 실행 경로에서만 나온다.
    */
+
+  /**
+   * 실행 실패를 화면에 남긴다. DB 가 알려 준 위치를 찾으면 **에디터 커서를 그리로 옮겨**
+   * 사용자가 바로 고칠 수 있게 한다. 위치를 못 찾으면 메시지만 보여 준다 —
+   * 틀린 자리를 짚느니 안 짚는 편이 낫다.
+   */
+  function reportSqlError(e: unknown, title: string) {
+    const message = errorLine(e);
+    const spot = findErrorSpot(text, message);
+    setSqlError({ message, spot });
+    if (spot) {
+      const view = editorRef.current?.view;
+      view?.focus();
+      view?.dispatch({
+        selection: { anchor: spot.offset, head: spot.offset + spot.length },
+        scrollIntoView: true,
+      });
+    }
+    addHistory({ sql: text, connName, ok: false, error: message });
+    ui.toastError(e, title);
+  }
+
   async function runAuto() {
     if (returnsRows(text)) await run();
     else await runScript();
@@ -106,6 +139,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   async function run() {
     setRunning(true);
     setExec(null);
+    setSqlError(null);
     try {
       const r = await api.runQuery(connId, text, 5000);
       setResult(r);
@@ -127,9 +161,8 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         elapsedMs: r.elapsedMs,
       });
     } catch (e) {
-      // 실패한 쿼리도 남긴다 — 고쳐 쓰려고 다시 꺼내는 경우가 많다.
-      addHistory({ sql: text, connName, ok: false, error: errorLine(e) });
-      ui.toastError(e, "쿼리 실행 실패");
+      // 실패한 쿼리도 히스토리에 남긴다 — 고쳐 쓰려고 다시 꺼내는 경우가 많다.
+      reportSqlError(e, "쿼리 실행 실패");
     } finally {
       setRunning(false);
     }
@@ -138,6 +171,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   async function runScript() {
     setRunning(true);
     setResult(null);
+    setSqlError(null);
     try {
       const r = await api.runExecute(connId, text);
       setExec(r);
@@ -164,8 +198,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         message: `${r.rowsAffected}행 영향 (${r.elapsedMs}ms)`,
       });
     } catch (e) {
-      addHistory({ sql: text, connName, ok: false, error: errorLine(e) });
-      ui.toastError(e, "실행 실패");
+      reportSqlError(e, "실행 실패");
     } finally {
       setRunning(false);
     }
@@ -217,6 +250,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
               }}
             >
               <CodeMirror
+                ref={editorRef}
                 value={text}
                 theme={oneDark}
                 height="100%"
@@ -238,6 +272,48 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
           <PanelResizeHandle className="resize-handle horizontal" />
           <Panel defaultSize="60" minSize="15">
             <div className="query-result">
+              {sqlError && (
+                <div className="sql-error">
+                  <div className="sql-error-head">
+                    <AlertTriangle size={13} />
+                    {sqlError.spot ? (
+                      <b>
+                        {sqlError.spot.line}행 {sqlError.spot.col}열 부근
+                      </b>
+                    ) : (
+                      <b>실행 실패</b>
+                    )}
+                    {sqlError.spot && (
+                      <button
+                        className="btn sm"
+                        onClick={() => {
+                          const view = editorRef.current?.view;
+                          view?.focus();
+                          view?.dispatch({
+                            selection: {
+                              anchor: sqlError.spot!.offset,
+                              head: sqlError.spot!.offset + sqlError.spot!.length,
+                            },
+                            scrollIntoView: true,
+                          });
+                        }}
+                        title="에디터에서 그 위치로"
+                      >
+                        위치로 이동
+                      </button>
+                    )}
+                    <span className="spacer" />
+                    <button
+                      className="btn icon"
+                      title="닫기"
+                      onClick={() => setSqlError(null)}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                  <pre className="sql-error-msg mono">{sqlError.message}</pre>
+                </div>
+              )}
               {result ? (
                 <ResultTable result={result} />
               ) : exec ? (
