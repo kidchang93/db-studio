@@ -164,6 +164,8 @@ export function DataGridTab({ connId, table }: Props) {
   const [colPanel, setColPanel] = useState(false);
   /** 레코드 뷰(사이드 패널) 열림 여부. 커서 행을 세로로 펼쳐 본다. */
   const [recordOpen, setRecordOpen] = useState(false);
+  /** 행 이동 다이얼로그(⌘/Ctrl+G). 열려 있으면 입력 중인 행 번호를 들고 있다. */
+  const [gotoRow, setGotoRow] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -598,6 +600,19 @@ export function DataGridTab({ connId, table }: Props) {
     // ⌘/Ctrl+Shift+N: 선택 셀을 NULL 로
     if (mod && e.shiftKey && e.key.toLowerCase() === "n") {
       setRangeNull();
+      e.preventDefault();
+      return;
+    }
+    // ⌘/Ctrl+G: 행 번호로 이동 (DataGrip 과 같은 키)
+    if (mod && e.key.toLowerCase() === "g") {
+      setGotoRow(cursor ? String(offset + cursor.row + 1) : "");
+      e.preventDefault();
+      return;
+    }
+    // ⌘/Ctrl+Alt+↑/↓: 이전·다음 페이지
+    if (mod && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      if (e.key === "ArrowUp") setOffset(Math.max(0, offset - pageSize));
+      else if (!atLastPage) setOffset(offset + pageSize);
       e.preventDefault();
       return;
     }
@@ -1122,6 +1137,33 @@ export function DataGridTab({ connId, table }: Props) {
         )}
       </div>
 
+      {gotoRow !== null && (
+        <GotoRowDialog
+          value={gotoRow}
+          onChange={setGotoRow}
+          first={offset + 1}
+          last={offset + rows.length}
+          onClose={() => {
+            setGotoRow(null);
+            gridRef.current?.focus();
+          }}
+          onGo={(n) => {
+            // 화면의 행 번호는 offset 기준이라 페이지 안 인덱스로 되돌린다.
+            const row = n - offset - 1;
+            setCursor({ row, col: cursor?.col ?? 0 });
+            setAnchor({ row, col: cursor?.col ?? 0 });
+            setGotoRow(null);
+            gridRef.current?.focus();
+            // 렌더 뒤에 스크롤해야 해당 행이 이미 그려져 있다.
+            setTimeout(() => {
+              gridRef.current
+                ?.querySelectorAll<HTMLElement>("tbody tr")
+                [row]?.scrollIntoView({ block: "center" });
+            }, 0);
+          }}
+        />
+      )}
+
       {recordOpen && cursor && rows[cursor.row] !== undefined && (
         <RecordView
           columns={allColumns}
@@ -1341,5 +1383,66 @@ function CellEditor({
         else if (e.key === "Escape") onCancel();
       }}
     />
+  );
+}
+
+/**
+ * 행 번호로 이동 (⌘/Ctrl+G — DataGrip 과 같은 키).
+ *
+ * **현재 페이지 안에서만** 옮긴다. 화면에 보이는 번호(`offset + i + 1`)를 그대로 받되,
+ * 페이지 밖 번호는 받지 않고 범위를 알려 준다 — 다른 페이지로 넘어가는 것은
+ * 재조회를 동반해서, "이동"이라는 기대와 달리 화면이 통째로 바뀌기 때문이다.
+ */
+function GotoRowDialog({
+  value,
+  onChange,
+  first,
+  last,
+  onGo,
+  onClose,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  first: number;
+  last: number;
+  onGo: (n: number) => void;
+  onClose: () => void;
+}) {
+  const n = Number(value.trim());
+  const valid = Number.isInteger(n) && n >= first && n <= last;
+
+  return (
+    <Modal
+      title="행 이동"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            취소
+          </button>
+          <button className="btn primary" disabled={!valid} onClick={() => onGo(n)}>
+            이동
+          </button>
+        </>
+      }
+    >
+      <div className="field">
+        <label>행 번호</label>
+        <input
+          {...rawTextInputProps}
+          className="input"
+          autoFocus
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && valid) onGo(n);
+          }}
+          placeholder={`${first} – ${last}`}
+        />
+      </div>
+      <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+        이 페이지에 보이는 범위는 {first} – {last} 행입니다.
+      </div>
+    </Modal>
   );
 }
