@@ -1326,3 +1326,14 @@ table.grid tbody tr.selected td {
 .record-value.dirty {
   color: var(--warning);
 }
+
+/* 상태바 집계 함수 선택 — 텍스트처럼 보이게 최소한만 꾸민다. */
+.agg-select {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 0 2px 0 0;
+  cursor: pointer;
+}

@@ -93,6 +93,40 @@ function formatAgg(n: number): string {
   );
 }
 
+export type AggFn = "sum" | "avg" | "min" | "max" | "count";
+
+/** 상태바에서 고를 수 있는 집계 함수. DataGrip 의 aggregator 위젯과 같은 역할. */
+const AGG_FNS: { key: AggFn; label: string }[] = [
+  { key: "sum", label: "합계" },
+  { key: "avg", label: "평균" },
+  { key: "min", label: "최소" },
+  { key: "max", label: "최대" },
+  { key: "count", label: "개수" },
+];
+
+interface Agg {
+  count: number;
+  sum: number;
+  avg: number;
+  min: number;
+  max: number;
+}
+
+function aggValue(fn: AggFn, a: Agg): number {
+  switch (fn) {
+    case "avg":
+      return a.avg;
+    case "min":
+      return a.min;
+    case "max":
+      return a.max;
+    case "count":
+      return a.count;
+    default:
+      return a.sum;
+  }
+}
+
 function coerce(input: string, lt: LogicalType): Cell {
   if (input === "") return null;
   switch (lt) {
@@ -166,6 +200,8 @@ export function DataGridTab({ connId, table }: Props) {
   const [recordOpen, setRecordOpen] = useState(false);
   /** 행 이동 다이얼로그(⌘/Ctrl+G). 열려 있으면 입력 중인 행 번호를 들고 있다. */
   const [gotoRow, setGotoRow] = useState<string | null>(null);
+  /** 선택 셀 집계에 쓸 함수. DataGrip 처럼 골라 쓸 수 있게 둔다(기본 합계). */
+  const [aggFn, setAggFn] = useState<AggFn>("sum");
   const [exporting, setExporting] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -239,6 +275,7 @@ export function DataGridTab({ connId, table }: Props) {
       }
     }
     return count > 0 ? { count, sum, avg: sum / count, min, max } : null;
+
     // cellValue 는 매 렌더 새로 만들어지므로 그 입력(rows·edits·columns)을 의존성으로 둔다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multiRange, columns, rows, edits]);
@@ -844,11 +881,21 @@ export function DataGridTab({ connId, table }: Props) {
         {aggregate && (
           <span
             className="muted mono cursor-pos"
-            title={`숫자 ${aggregate.count}개 · 최소 ${formatAgg(
-              aggregate.min,
-            )} · 최대 ${formatAgg(aggregate.max)}`}
+            title={`선택한 숫자 ${aggregate.count}개 · 클릭하면 집계 함수를 바꿉니다`}
           >
-            합계 {formatAgg(aggregate.sum)} · 평균 {formatAgg(aggregate.avg)}
+            <select
+              className="agg-select"
+              value={aggFn}
+              onChange={(e) => setAggFn(e.target.value as AggFn)}
+              title="집계 함수"
+            >
+              {AGG_FNS.map((f) => (
+                <option key={f.key} value={f.key}>
+                  {f.label}
+                </option>
+              ))}
+            </select>{" "}
+            {formatAgg(aggValue(aggFn, aggregate))}
           </span>
         )}
 
