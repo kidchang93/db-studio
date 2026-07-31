@@ -1264,3 +1264,65 @@ table.grid tbody tr.selected td {
   word-break: break-all;
   background: var(--bg-alt, transparent);
 }
+
+/* ===== 레코드 뷰(사이드 패널) ===== */
+/* 그리드와 패널을 나란히 놓는 가로 컨테이너. */
+.grid-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.grid-main > .grid-scroll {
+  flex: 1;
+  min-width: 0;
+}
+.record-view {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+.record-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+/* 행 전체가 버튼이라 기본 꾸밈을 지운다. */
+.record-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 5px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.record-row:hover {
+  background: var(--bg-hover);
+}
+.record-name {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.record-name.pk {
+  color: var(--warning);
+}
+.record-value {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.record-value.null {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.record-value.dirty {
+  color: var(--warning);
+}

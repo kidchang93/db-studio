@@ -17,6 +17,7 @@ import {
   Copy,
   CopyPlus,
   Eye,
+  PanelRight,
   Plus,
   Download,
   RefreshCw,
@@ -40,6 +41,7 @@ import { Modal } from "../../components/Modal";
 import { StructureView } from "./StructureView";
 import { ExportDialog } from "./ExportDialog";
 import { ColumnVisibilityPanel } from "./ColumnVisibilityPanel";
+import { RecordView } from "./RecordView";
 import { normalizeSmartQuotes, rawTextInputProps } from "../../lib/sqlText";
 
 interface Props {
@@ -160,6 +162,8 @@ export function DataGridTab({ connId, table }: Props) {
   /** 화면에서 감춘 컬럼(이름 기준). 300컬럼 테이블의 가로 스크롤을 줄인다. */
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
   const [colPanel, setColPanel] = useState(false);
+  /** 레코드 뷰(사이드 패널) 열림 여부. 커서 행을 세로로 펼쳐 본다. */
+  const [recordOpen, setRecordOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -650,8 +654,11 @@ export function DataGridTab({ connId, table }: Props) {
         break;
       case "Enter":
       case "F2":
-        // Shift+Enter 는 값 뷰어, 그 외에는 편집(DataGrip 과 동일).
-        if (e.key === "Enter" && e.shiftKey) {
+        // ⌘/Ctrl+Shift+Enter 는 레코드 뷰, Shift+Enter 는 값 뷰어,
+        // 그 외에는 편집(모두 DataGrip 과 같은 키).
+        if (e.key === "Enter" && e.shiftKey && (e.metaKey || e.ctrlKey)) {
+          setRecordOpen((v) => !v);
+        } else if (e.key === "Enter" && e.shiftKey) {
           setViewer(cursor);
         } else if (editable && !deleted.has(cursor.row)) {
           setEditing({ row: cursor.row, col: columns[cursor.col].name });
@@ -793,6 +800,18 @@ export function DataGridTab({ connId, table }: Props) {
           }
         >
           <Eye size={13} /> 값 보기
+        </button>
+        <button
+          className={`btn sm${recordOpen ? " on" : ""}`}
+          onClick={() => setRecordOpen((v) => !v)}
+          disabled={!cursor}
+          title={
+            cursor
+              ? "레코드 뷰 — 한 행을 세로로 (⌘/Ctrl+Shift+Enter)"
+              : "행을 먼저 선택하세요"
+          }
+        >
+          <PanelRight size={13} /> 레코드
         </button>
 
         <span className="spacer" />
@@ -957,6 +976,7 @@ export function DataGridTab({ connId, table }: Props) {
         </div>
       )}
 
+      <div className="grid-main">
       <div
         className="grid-scroll"
         ref={gridRef}
@@ -1100,6 +1120,27 @@ export function DataGridTab({ connId, table }: Props) {
             <div className="muted">‘행 추가’로 새 데이터를 삽입할 수 있습니다.</div>
           </div>
         )}
+      </div>
+
+      {recordOpen && cursor && rows[cursor.row] !== undefined && (
+        <RecordView
+          columns={allColumns}
+          rowNo={offset + cursor.row + 1}
+          valueOf={(name) => cellValue(cursor.row, name)}
+          isDirty={(name) => isDirty(cursor.row, name)}
+          primaryKeys={pks}
+          onPick={(name) => {
+            // 숨긴 컬럼은 그리드에 없으므로 커서를 옮길 수 없다 — 그때는 그대로 둔다.
+            const col = columns.findIndex((c) => c.name === name);
+            if (col >= 0) setCursor({ row: cursor.row, col });
+            gridRef.current?.focus();
+          }}
+          onClose={() => {
+            setRecordOpen(false);
+            gridRef.current?.focus();
+          }}
+        />
+      )}
       </div>
 
       {colPanel && (
