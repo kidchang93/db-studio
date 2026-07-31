@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { errorMessage } from "../types";
+import { useLogStore } from "./logStore";
 
 export interface Toast {
   id: string;
@@ -35,8 +36,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
   toastError: (err, title = "오류") => {
-    get().pushToast({ kind: "error", title, message: errorMessage(err) });
-    set({ status: `오류: ${errorMessage(err)}` });
+    const message = errorMessage(err);
+    get().pushToast({ kind: "error", title, message });
+    set({ status: `오류: ${message}` });
+    // 토스트는 5초 뒤 사라진다. 오류만큼은 되짚을 수 있어야 하므로 로그에도 남긴다.
+    // 모든 오류가 이 함수를 지나므로 여기 한 곳이면 빠짐없이 기록된다.
+    useLogStore.getState().add({ kind: "error", label: title, detail: message });
   },
 
   setStatus: (status) => set({ status }),

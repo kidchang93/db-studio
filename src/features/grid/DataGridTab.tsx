@@ -35,6 +35,7 @@ import type {
   TableRef,
 } from "../../types";
 import { useUiStore } from "../../store/uiStore";
+import { useLogStore } from "../../store/logStore";
 import { Modal } from "../../components/Modal";
 import { StructureView } from "./StructureView";
 import { ExportDialog } from "./ExportDialog";
@@ -479,6 +480,13 @@ export function DataGridTab({ connId, table }: Props) {
         kind: "success",
         title: "커밋 완료",
         message: `추가 ${res.inserted} · 수정 ${res.updated} · 삭제 ${res.deleted}`,
+      });
+      // 커밋은 백엔드가 문장을 만들기 때문에, 응답에 실려 온 SQL 을 그대로 남긴다.
+      useLogStore.getState().add({
+        kind: "commit",
+        label: `커밋 — ${table.name}`,
+        sql: res.statements.join("\n"),
+        detail: `추가 ${res.inserted} · 수정 ${res.updated} · 삭제 ${res.deleted}`,
       });
       await load();
     } catch (e) {

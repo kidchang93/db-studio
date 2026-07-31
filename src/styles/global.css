@@ -1189,3 +1189,75 @@ table.grid tbody tr.selected td {
   background: color-mix(in srgb, var(--danger) 22%, transparent);
   color: var(--danger);
 }
+
+/* ===== 하단 로그 패널 ===== */
+.log-panel {
+  display: flex;
+  flex-direction: column;
+  height: 200px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.log-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.log-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+.log-row {
+  border-bottom: 1px solid var(--border);
+}
+/* 행 전체가 버튼이라 기본 버튼 꾸밈을 지운다. */
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 10px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.log-head:hover {
+  background: var(--bg-hover);
+}
+.log-kind {
+  flex-shrink: 0;
+  min-width: 26px;
+  font-weight: 600;
+}
+.log-label {
+  flex-shrink: 0;
+}
+/* 요약은 길면 줄이되 남는 공간을 다 쓴다. */
+.log-detail {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-row[data-kind="error"] .log-label {
+  color: var(--danger);
+}
+.log-sql {
+  margin: 0;
+  padding: 6px 10px 8px 46px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--bg-alt, transparent);
+}

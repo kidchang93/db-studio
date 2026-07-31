@@ -210,6 +210,8 @@ export interface ApplyChangesResult {
   inserted: number;
   updated: number;
   deleted: number;
+  /** 실제로 실행된 문장(로그 패널용). 값은 바인딩되므로 문형만 담긴다. */
+  statements: string[];
 }
 
 /** 백엔드 AppError 직렬화 형태. */

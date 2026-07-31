@@ -283,6 +283,7 @@ impl Driver for PostgresDriver {
         for edit in &req.edits {
             if let RowEdit::Delete { pk } = edit {
                 let b = sql::build_delete(&DIALECT, &req.table, pk)?;
+                res.statements.push(b.sql.clone());
                 let mut q = sqlx::query(AssertSqlSafe(b.sql));
                 for p in &b.params {
                     q = bind_json!(q, p);
@@ -297,6 +298,7 @@ impl Driver for PostgresDriver {
         for edit in &req.edits {
             if let RowEdit::Update { pk, changes } = edit {
                 let b = sql::build_update(&DIALECT, &req.table, pk, changes)?;
+                res.statements.push(b.sql.clone());
                 let mut q = sqlx::query(AssertSqlSafe(b.sql));
                 for p in &b.params {
                     q = bind_json!(q, p);
@@ -311,6 +313,7 @@ impl Driver for PostgresDriver {
         for edit in &req.edits {
             if let RowEdit::Insert { values } = edit {
                 let b = sql::build_insert(&DIALECT, &req.table, values)?;
+                res.statements.push(b.sql.clone());
                 let mut q = sqlx::query(AssertSqlSafe(b.sql));
                 for p in &b.params {
                     q = bind_json!(q, p);

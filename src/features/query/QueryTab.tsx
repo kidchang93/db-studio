@@ -14,6 +14,7 @@ import type { DbKind, ExecResult, QueryResult } from "../../types";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useHistoryStore } from "../../store/historyStore";
+import { useLogStore } from "../../store/logStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { QueryHistory } from "./QueryHistory";
 import { normalizeSmartQuotes, returnsRows, scanSqlText } from "../../lib/sqlText";
@@ -51,6 +52,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     null,
   );
   const addHistory = useHistoryStore((s) => s.add);
+  const addLog = useLogStore((s) => s.add);
   const connName = useConnectionStore((s) => s.connections[connId]?.name ?? connId);
 
   /**
@@ -117,6 +119,13 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
       ui.setStatus(
         `${r.rows.length}행 반환${r.truncated ? " (잘림)" : ""} (${r.elapsedMs}ms)`,
       );
+      addLog({
+        kind: "query",
+        label: "쿼리 실행",
+        sql: text,
+        detail: `${r.rows.length}행 반환${r.truncated ? " (잘림)" : ""}`,
+        elapsedMs: r.elapsedMs,
+      });
     } catch (e) {
       // 실패한 쿼리도 남긴다 — 고쳐 쓰려고 다시 꺼내는 경우가 많다.
       addHistory({ sql: text, connName, ok: false, error: errorLine(e) });
@@ -140,6 +149,13 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         elapsedMs: r.elapsedMs,
       });
       ui.setStatus(`${r.rowsAffected}행 영향 (${r.elapsedMs}ms)`);
+      addLog({
+        kind: "exec",
+        label: "문장 실행",
+        sql: text,
+        detail: `${r.rowsAffected}행 영향`,
+        elapsedMs: r.elapsedMs,
+      });
       // 쓰기 결과는 토스트로도 알린다 — 상태바는 화면 맨 아래라 놓치기 쉽고,
       // 몇 행이 바뀌었는지는 실행 직후 반드시 확인해야 하는 정보다.
       ui.pushToast({

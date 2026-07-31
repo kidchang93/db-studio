@@ -545,7 +545,11 @@ impl Driver for MssqlDriver {
                 .await?;
         }
 
-        let mut res = ApplyChangesResult::default();
+        // 문장은 트랜잭션 전에 다 만들어 두므로 여기서 한 번에 담는다.
+        let mut res = ApplyChangesResult {
+            statements: ops.iter().map(|(_, b)| b.sql.clone()).collect(),
+            ..Default::default()
+        };
         for (kind, b) in &ops {
             let pv: Vec<P> = b.params.iter().map(to_param).collect();
             let refs: Vec<&dyn ToSql> = pv.iter().map(|p| p as &dyn ToSql).collect();

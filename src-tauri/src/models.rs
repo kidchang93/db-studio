@@ -398,4 +398,10 @@ pub struct ApplyChangesResult {
     pub inserted: u64,
     pub updated: u64,
     pub deleted: u64,
+    /// 실제로 실행된 문장. 로그 패널이 "커밋이 무엇을 보냈는지" 보여주는 데 쓴다.
+    ///
+    /// **값은 파라미터로 바인딩되므로 여기에 담기지 않는다** — 문형만 남는다.
+    /// 그래야 로그에 자격증명·개인정보가 새지 않는다(`docs/DESIGN.md` §9).
+    #[serde(default)]
+    pub statements: Vec<String>,
 }

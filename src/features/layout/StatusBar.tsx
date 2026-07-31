@@ -1,13 +1,17 @@
-import { Download, Moon, RefreshCw, Sun } from "lucide-react";
+import { Download, Moon, RefreshCw, ScrollText, Sun } from "lucide-react";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useUpdateStore } from "../../store/updateStore";
+import { useLogStore } from "../../store/logStore";
 
 export function StatusBar() {
   const status = useUiStore((s) => s.status);
   const theme = useUiStore((s) => s.theme);
   const toggleTheme = useUiStore((s) => s.toggleTheme);
   const connCount = useConnectionStore((s) => Object.keys(s.connections).length);
+  const logOpen = useLogStore((s) => s.open);
+  const toggleLog = useLogStore((s) => s.toggle);
+  const logCount = useLogStore((s) => s.entries.length);
 
   const version = useUpdateStore((s) => s.version);
   const available = useUpdateStore((s) => s.available);
@@ -45,6 +49,14 @@ export function StatusBar() {
       )}
 
       {version && <span className="muted">v{version}</span>}
+
+      <button
+        className={`btn icon${logOpen ? " on" : ""}`}
+        onClick={toggleLog}
+        title={`로그 ${logOpen ? "닫기" : "열기"}${logCount ? ` (${logCount}건)` : ""}`}
+      >
+        <ScrollText size={13} />
+      </button>
 
       <button className="btn icon" onClick={toggleTheme} title="테마 전환">
         {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}

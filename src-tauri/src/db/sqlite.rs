@@ -218,6 +218,7 @@ impl Driver for SqliteDriver {
         for edit in &req.edits {
             if let RowEdit::Delete { pk } = edit {
                 let b = sql::build_delete(&DIALECT, &req.table, pk)?;
+                res.statements.push(b.sql.clone());
                 let mut q = sqlx::query(AssertSqlSafe(b.sql));
                 for p in &b.params {
                     q = bind_json!(q, p);
@@ -232,6 +233,7 @@ impl Driver for SqliteDriver {
         for edit in &req.edits {
             if let RowEdit::Update { pk, changes } = edit {
                 let b = sql::build_update(&DIALECT, &req.table, pk, changes)?;
+                res.statements.push(b.sql.clone());
                 let mut q = sqlx::query(AssertSqlSafe(b.sql));
                 for p in &b.params {
                     q = bind_json!(q, p);
@@ -246,6 +248,7 @@ impl Driver for SqliteDriver {
         for edit in &req.edits {
             if let RowEdit::Insert { values } = edit {
                 let b = sql::build_insert(&DIALECT, &req.table, values)?;
+                res.statements.push(b.sql.clone());
                 let mut q = sqlx::query(AssertSqlSafe(b.sql));
                 for p in &b.params {
                     q = bind_json!(q, p);
@@ -371,6 +374,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ins.inserted, 2);
+        // 로그 패널이 "커밋이 무엇을 보냈는지" 보여주려면 실행한 문장이 실려 와야 한다.
+        assert_eq!(ins.statements.len(), 2, "실행한 문장이 담기지 않았다");
+        assert!(ins.statements[0].starts_with("INSERT INTO"));
+        // **값은 절대 담기면 안 된다** — 파라미터 바인딩이라 문형만 남아야 하고,
+        // 그래야 로그에 개인정보가 새지 않는다(docs/DESIGN.md §9).
+        assert!(
+            !ins.statements.iter().any(|s| s.contains("alice")),
+            "값이 SQL 에 섞였다: {:?}",
+            ins.statements
+        );
 
         // fetch_page + 정렬
         let page = d

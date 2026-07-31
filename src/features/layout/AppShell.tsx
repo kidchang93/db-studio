@@ -8,18 +8,21 @@ import {
 } from "react-resizable-panels";
 import { Sidebar } from "../connections/Sidebar";
 import { StatusBar } from "./StatusBar";
+import { LogPanel } from "./LogPanel";
 import { TabBar } from "./TabBar";
 import { DataGridTab } from "../grid/DataGridTab";
 import { QueryTab } from "../query/QueryTab";
 import { Toasts } from "../../components/Toasts";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useLogStore } from "../../store/logStore";
 
 export function AppShell() {
   const tabs = useWorkspaceStore((s) => s.tabs);
   const activeTabId = useWorkspaceStore((s) => s.activeTabId);
   const openQuery = useWorkspaceStore((s) => s.openQuery);
   const connections = useConnectionStore((s) => s.connections);
+  const logOpen = useLogStore((s) => s.open);
 
   /**
    * ⌘/Ctrl+F → 지금 있는 영역의 검색창으로 포커스.
@@ -132,6 +135,7 @@ export function AppShell() {
           </Panel>
         </PanelGroup>
       </div>
+      {logOpen && <LogPanel />}
       <StatusBar />
       <Toasts />
     </div>

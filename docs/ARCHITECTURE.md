@@ -39,7 +39,7 @@
 | `main.tsx`, `App.tsx` | 엔트리, 최상위 셸 마운트 |
 | `types/` | 백엔드 `models.rs`와 1:1 대응하는 TS 타입 (IPC 계약) |
 | `api/` | `invoke` 래퍼. **command 하나당 함수 하나.** 컴포넌트는 여기만 호출 |
-| `store/` | zustand 스토어. `connectionStore`(프로필·활성연결), `workspaceStore`(탭·활성객체), 그리드/쿼리 상태 |
+| `store/` | zustand 스토어. `connectionStore`(프로필·활성연결), `workspaceStore`(탭·활성객체), `logStore`(실행 로그), 그리드/쿼리 상태 |
 | `features/connections/` | 프로필 목록, 연결 추가/수정 다이얼로그(DB종류별 폼), 연결/해제 |
 | `features/explorer/` | 좌측 스키마 트리 (DB→스키마→테이블→컬럼), 지연 로딩 |
 | `features/grid/` | 데이터 그리드: 가상 스크롤, 인라인 편집, pending 변경 추적, 커밋 |
