@@ -16,7 +16,7 @@ import { useUiStore } from "../../store/uiStore";
 import { useHistoryStore } from "../../store/historyStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { QueryHistory } from "./QueryHistory";
-import { normalizeSmartQuotes, scanSqlText } from "../../lib/sqlText";
+import { normalizeSmartQuotes, returnsRows, scanSqlText } from "../../lib/sqlText";
 import { Modal } from "../../components/Modal";
 
 /** 히스토리에 남길 오류 요약 — 첫 줄만 짧게. */
@@ -90,6 +90,17 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     exec();
   }
 
+  /**
+   * 실행 버튼의 진입점. 문장 종류를 보고 조회/실행 경로를 **자동으로 가른다**.
+   *
+   * DML·DDL 을 조회 경로로 보내면 결과셋이 없어 빈 표와 "0행 반환"만 남는다.
+   * 정작 알아야 할 영향 행 수는 실행 경로에서만 나온다.
+   */
+  async function runAuto() {
+    if (returnsRows(text)) await run();
+    else await runScript();
+  }
+
   async function run() {
     setRunning(true);
     setExec(null);
@@ -129,9 +140,16 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         elapsedMs: r.elapsedMs,
       });
       ui.setStatus(`${r.rowsAffected}행 영향 (${r.elapsedMs}ms)`);
+      // 쓰기 결과는 토스트로도 알린다 — 상태바는 화면 맨 아래라 놓치기 쉽고,
+      // 몇 행이 바뀌었는지는 실행 직후 반드시 확인해야 하는 정보다.
+      ui.pushToast({
+        kind: "success",
+        title: "실행 완료",
+        message: `${r.rowsAffected}행 영향 (${r.elapsedMs}ms)`,
+      });
     } catch (e) {
       addHistory({ sql: text, connName, ok: false, error: errorLine(e) });
-      ui.toastError(e, "스크립트 실행 실패");
+      ui.toastError(e, "실행 실패");
     } finally {
       setRunning(false);
     }
@@ -142,7 +160,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
       <div className="query-toolbar">
           <button
             className="btn sm primary"
-            onClick={() => guarded(run)}
+            onClick={() => guarded(runAuto)}
             disabled={running}
             title="Ctrl/Cmd+Enter"
           >
@@ -178,7 +196,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                   e.preventDefault();
-                  guarded(run);
+                  guarded(runAuto);
                 }
               }}
             >

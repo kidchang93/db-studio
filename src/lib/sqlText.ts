@@ -28,6 +28,56 @@ export function normalizeSmartQuotes(input: string): string {
     .replace(/[“”„‟″]/g, '"');
 }
 
+/** 앞쪽 주석·공백을 걷어낸 첫 키워드(소문자). 없으면 빈 문자열. */
+function firstKeyword(sql: string): string {
+  let s = sql;
+  for (;;) {
+    s = s.trimStart();
+    if (s.startsWith("--")) {
+      const nl = s.indexOf("\n");
+      if (nl < 0) return "";
+      s = s.slice(nl + 1);
+      continue;
+    }
+    if (s.startsWith("/*")) {
+      const end = s.indexOf("*/");
+      if (end < 0) return "";
+      s = s.slice(end + 2);
+      continue;
+    }
+    break;
+  }
+  return /^[a-zA-Z_]+/.exec(s)?.[0].toLowerCase() ?? "";
+}
+
+/** 결과셋을 돌려주는 문장들. 프로시저 호출은 결과셋이 있을 수 있어 여기에 둔다. */
+const ROW_RETURNING = new Set([
+  "select",
+  "with",
+  "show",
+  "explain",
+  "describe",
+  "desc",
+  "pragma",
+  "values",
+  "table",
+  "exec",
+  "execute",
+  "call",
+]);
+
+/**
+ * 결과셋을 돌려주는 문장인가. 조회 경로(`run_query`)와 실행 경로(`run_execute`) 중
+ * 어디로 보낼지 정하는 데 쓴다.
+ *
+ * **실행해 보고 되돌리는 폴백은 불가능하다** — 이미 나간 INSERT 를 다시 보낼 수는 없으므로
+ * 보내기 전에 정해야 한다. 그래서 첫 키워드만 보고 판단하고, 애매하면 조회 쪽에 둔다.
+ * 잘못 골라도 데이터가 상하지는 않는다(영향 행 수를 못 볼 뿐).
+ */
+export function returnsRows(sql: string): boolean {
+  return ROW_RETURNING.has(firstKeyword(sql));
+}
+
 export interface SqlScan {
   /** `N` 접두사가 없는 비ASCII 문자열 리터럴(중복 제거). */
   unprefixed: string[];
