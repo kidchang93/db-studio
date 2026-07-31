@@ -1239,15 +1239,18 @@ table.grid tbody tr.selected td {
   min-width: 26px;
   font-weight: 600;
 }
+/* SQL 이 주 텍스트다 — 남는 공간을 다 쓰고 길면 잘라 낸다. */
 .log-label {
-  flex-shrink: 0;
-}
-/* 요약은 길면 줄이되 남는 공간을 다 쓴다. */
-.log-detail {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 결과 요약과 소요시간은 오른쪽에 붙어 줄어들지 않는다. */
+.log-detail,
+.log-ms {
+  flex-shrink: 0;
 }
 .log-row[data-kind="error"] .log-label {
   color: var(--danger);

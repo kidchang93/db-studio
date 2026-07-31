@@ -23,28 +23,48 @@ function timeOf(ts: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/** 목록에 한 줄로 얹기 위해 개행·연속 공백을 접는다. */
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
 function Row({ entry }: { entry: LogEntry }) {
   const [open, setOpen] = useState(false);
   const sql = entry.sql?.trim();
+  const statements = sql ? sql.split("\n").filter((l) => l.trim()) : [];
+
+  /**
+   * 목록의 주 텍스트는 **SQL 그 자체**다.
+   *
+   * "문장 실행" 같은 라벨은 왼쪽 종류 배지와 겹쳐서, 그걸 보여 주면 정작 무엇이
+   * 실행됐는지는 펼쳐야만 알 수 있다. 로그를 여는 이유가 바로 그것이므로 앞에 세운다.
+   */
+  const preview =
+    statements.length > 1
+      ? `${statements.length}개 문장 — ${oneLine(statements[0])}`
+      : sql
+        ? oneLine(sql)
+        : entry.label;
+
   return (
     <div className="log-row" data-kind={entry.kind}>
       <button
         className="log-head"
         onClick={() => sql && setOpen((v) => !v)}
-        title={sql ? "SQL 펼치기/접기" : undefined}
+        title={sql ? "클릭하면 전문 보기" : undefined}
         style={{ cursor: sql ? "pointer" : "default" }}
       >
         <span className="mono muted">{timeOf(entry.ts)}</span>
         <span className="log-kind" style={{ color: KIND_COLOR[entry.kind] }}>
           {KIND_LABEL[entry.kind]}
         </span>
-        <span className="log-label">{entry.label}</span>
+        <span className={`log-label${sql ? " mono" : ""}`}>{preview}</span>
         {entry.detail && <span className="muted log-detail">{entry.detail}</span>}
         {entry.elapsedMs !== undefined && (
-          <span className="muted mono">{entry.elapsedMs}ms</span>
+          <span className="muted mono log-ms">{entry.elapsedMs}ms</span>
         )}
       </button>
-      {/* SQL 은 접어 둔다 — 커밋 한 번에 문장이 여럿일 수 있어 펼치면 목록이 묻힌다. */}
+      {/* 한 줄로 잘린 전문·여러 문장은 펼쳐서 본다. */}
       {open && sql && <pre className="log-sql mono">{sql}</pre>}
     </div>
   );
