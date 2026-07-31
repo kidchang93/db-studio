@@ -602,6 +602,86 @@ impl Driver for MssqlDriver {
         ))
     }
 
+    /// `sys.foreign_key_columns` 로 양방향 FK 를 읽는다.
+    /// `constraint_column_id` 순서가 복합 FK 의 컬럼 대응 순서다.
+    async fn relations(&self, table: &TableRef) -> Result<TableRelations> {
+        let p = db_prefix(table.database.as_deref());
+        let sql = format!(
+            "SELECT fk.name AS fk_name, \
+                    CASE WHEN fk.parent_object_id = OBJECT_ID(@P1) THEN 1 ELSE 0 END AS is_outgoing, \
+                    ps.name AS src_schema, pt.name AS src_table, pc.name AS src_col, \
+                    rs.name AS tgt_schema, rt.name AS tgt_table, rc.name AS tgt_col \
+             FROM {p}sys.foreign_keys fk \
+             JOIN {p}sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
+             JOIN {p}sys.tables pt ON pt.object_id = fk.parent_object_id \
+             JOIN {p}sys.schemas ps ON ps.schema_id = pt.schema_id \
+             JOIN {p}sys.columns pc ON pc.object_id = fkc.parent_object_id \
+                                   AND pc.column_id = fkc.parent_column_id \
+             JOIN {p}sys.tables rt ON rt.object_id = fk.referenced_object_id \
+             JOIN {p}sys.schemas rs ON rs.schema_id = rt.schema_id \
+             JOIN {p}sys.columns rc ON rc.object_id = fkc.referenced_object_id \
+                                   AND rc.column_id = fkc.referenced_column_id \
+             WHERE fk.parent_object_id = OBJECT_ID(@P1) \
+                OR fk.referenced_object_id = OBJECT_ID(@P1) \
+             ORDER BY fk.name, fkc.constraint_column_id"
+        );
+        let qualified = format!("{}.{}", schema_or_default(table), table.name);
+        let rows = self.query_rows(&sql, &[Value::String(qualified)]).await?;
+
+        // (제약 이름, 방향)으로 묶어야 자기참조 테이블에서 양방향이 섞이지 않는다.
+        let mut acc: std::collections::BTreeMap<(String, bool), ForeignKeyRef> = Default::default();
+        for r in &rows {
+            let name = get_str(r, "fk_name");
+            let outgoing = r
+                .try_get::<i32, _>("is_outgoing")
+                .ok()
+                .flatten()
+                .unwrap_or(0)
+                != 0;
+            let src_col = get_str(r, "src_col");
+            let tgt_col = get_str(r, "tgt_col");
+            let other = if outgoing {
+                TableRef {
+                    database: table.database.clone(),
+                    schema: Some(get_str(r, "tgt_schema")),
+                    name: get_str(r, "tgt_table"),
+                }
+            } else {
+                TableRef {
+                    database: table.database.clone(),
+                    schema: Some(get_str(r, "src_schema")),
+                    name: get_str(r, "src_table"),
+                }
+            };
+            let e = acc
+                .entry((name.clone(), outgoing))
+                .or_insert_with(|| ForeignKeyRef {
+                    name,
+                    columns: Vec::new(),
+                    table: other,
+                    ref_columns: Vec::new(),
+                });
+            // 들어오는 쪽은 방향이 뒤집힌다 — `columns` 는 언제나 **이 테이블**의 컬럼이다.
+            if outgoing {
+                e.columns.push(src_col);
+                e.ref_columns.push(tgt_col);
+            } else {
+                e.columns.push(tgt_col);
+                e.ref_columns.push(src_col);
+            }
+        }
+
+        let mut out = TableRelations::default();
+        for ((_, outgoing), fk) in acc {
+            if outgoing {
+                out.outgoing.push(fk);
+            } else {
+                out.incoming.push(fk);
+            }
+        }
+        Ok(out)
+    }
+
     /// SQL Server 는 기본값이 명명 제약이라, 바꾸려면 기존 제약 이름을 알아야 한다.
     async fn default_constraint_name(
         &self,
@@ -1230,6 +1310,60 @@ mod tests {
             0,
             "트랜잭션이 세션에 남았다"
         );
+    }
+
+    /// 외래키 관계를 양방향으로 읽는다(F4 관련 레코드 탐색).
+    ///
+    /// `columns` 가 **언제나 기준 테이블 쪽**을 가리켜야 한다 — 들어오는 FK 에서 방향이
+    /// 뒤집히면 엉뚱한 컬럼으로 필터를 걸어 관계없는 행을 열게 된다.
+    #[tokio::test]
+    #[ignore]
+    async fn relations_both_directions() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        for sql in [
+            "IF OBJECT_ID('dbo.rel_emp') IS NOT NULL DROP TABLE dbo.rel_emp",
+            "IF OBJECT_ID('dbo.rel_dept') IS NOT NULL DROP TABLE dbo.rel_dept",
+            "CREATE TABLE dbo.rel_dept (id INT NOT NULL PRIMARY KEY, name NVARCHAR(20))",
+            "CREATE TABLE dbo.rel_emp (id INT NOT NULL PRIMARY KEY, \
+             dept_id INT CONSTRAINT FK_emp_dept REFERENCES dbo.rel_dept(id))",
+        ] {
+            d.simple_rows(sql).await.expect("준비");
+        }
+        let t = |name: &str| TableRef {
+            database: Some("master".into()),
+            schema: Some("dbo".into()),
+            name: name.into(),
+        };
+
+        // emp 기준: dept 로 나간다.
+        let r = d.relations(&t("rel_emp")).await.expect("relations");
+        println!(
+            "[emp] out={:?}",
+            r.outgoing.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        let out = r
+            .outgoing
+            .iter()
+            .find(|f| f.table.name == "rel_dept")
+            .expect("emp → dept 가 없다");
+        assert_eq!(out.columns, vec!["dept_id"]);
+        assert_eq!(out.ref_columns, vec!["id"]);
+        assert!(r.incoming.is_empty(), "emp 를 참조하는 것은 없다");
+
+        // dept 기준: emp 가 들어온다. 방향이 뒤집히면 안 된다.
+        let r = d.relations(&t("rel_dept")).await.expect("relations");
+        println!(
+            "[dept] in={:?}",
+            r.incoming.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        let inc = r
+            .incoming
+            .iter()
+            .find(|f| f.table.name == "rel_emp")
+            .expect("dept ← emp 가 없다");
+        assert_eq!(inc.columns, vec!["id"], "방향이 뒤집혔다");
+        assert_eq!(inc.ref_columns, vec!["dept_id"]);
+        assert!(r.outgoing.is_empty(), "dept 는 참조하는 것이 없다");
     }
 
     /// 한글 문자열이 collation 과 `N` 접두사에 따라 어떻게 저장·조회되는지 고정한다.

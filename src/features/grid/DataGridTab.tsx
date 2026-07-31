@@ -29,6 +29,8 @@ import {
 import * as api from "../../api";
 import type {
   Cell,
+  FilterSpec,
+  ForeignKeyRef,
   LogicalType,
   RowEdit,
   SortSpec,
@@ -37,6 +39,7 @@ import type {
 } from "../../types";
 import { useUiStore } from "../../store/uiStore";
 import { useLogStore } from "../../store/logStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
 import { Modal } from "../../components/Modal";
 import { StructureView } from "./StructureView";
 import { ExportDialog } from "./ExportDialog";
@@ -47,6 +50,8 @@ import { normalizeSmartQuotes, rawTextInputProps } from "../../lib/sqlText";
 interface Props {
   connId: string;
   table: TableRef;
+  /** 탭을 열 때 적용할 필터(F4 로 들어온 경우). 백엔드가 값 바인딩으로 처리한다. */
+  initialFilters?: FilterSpec[];
 }
 
 interface InsertRow {
@@ -149,7 +154,7 @@ function coerce(input: string, lt: LogicalType): Cell {
   }
 }
 
-export function DataGridTab({ connId, table }: Props) {
+export function DataGridTab({ connId, table, initialFilters }: Props) {
   const ui = useUiStore();
   const [page, setPage] = useState<TablePage | null>(null);
   const [offset, setOffset] = useState(0);
@@ -165,6 +170,12 @@ export function DataGridTab({ connId, table }: Props) {
    * load 이펙트가 돌지 않으므로, Enter/적용 때마다 이 값을 올려 강제로 다시 조회한다.
    */
   const [reloadKey, setReloadKey] = useState(0);
+  /** 관련 레코드 탐색(F4)으로 들어온 필터. WHERE 바와 달리 값이 바인딩된다. */
+  const [relFilters, setRelFilters] = useState<FilterSpec[]>(initialFilters ?? []);
+  /** F4 대상 선택 팝업(관련 대상이 둘 이상일 때). */
+  const [relPick, setRelPick] = useState<
+    { fk: ForeignKeyRef; outgoing: boolean; filters: FilterSpec[] }[] | null
+  >(null);
   /**
    * WHERE 컬럼 자동완성 상태. Tab 을 누른 시점의 접두어(prefix)와 삽입 위치(start)를
    * 붙잡아 두고, Tab 을 반복할 때 같은 후보 목록 안에서 순환한다.
@@ -203,6 +214,10 @@ export function DataGridTab({ connId, table }: Props) {
   /** 선택 셀 집계에 쓸 함수. DataGrip 처럼 골라 쓸 수 있게 둔다(기본 합계). */
   const [aggFn, setAggFn] = useState<AggFn>("sum");
   const [exporting, setExporting] = useState(false);
+  const openTable = useWorkspaceStore((s) => s.openTable);
+  const connName = useWorkspaceStore(
+    (s) => s.tabs.find((x) => x.kind === "table" && x.connId === connId)?.connName ?? connId,
+  );
   const gridRef = useRef<HTMLDivElement>(null);
 
   const allColumns = page?.result.columns ?? [];
@@ -289,7 +304,7 @@ export function DataGridTab({ connId, table }: Props) {
         limit: pageSize,
         offset,
         sort,
-        filters: [],
+        filters: relFilters,
         filterSql: whereSql || null,
       });
       setPage(p);
@@ -310,7 +325,7 @@ export function DataGridTab({ connId, table }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [connId, table, offset, sort, whereSql, reloadKey, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connId, table, offset, sort, whereSql, relFilters, reloadKey, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     load();
@@ -616,6 +631,62 @@ export function DataGridTab({ connId, table }: Props) {
   }
 
   /** 그리드 키보드 조작: 방향키 이동, Enter/F2 편집, Space 행 선택. */
+  /**
+   * 관련 레코드 탐색(F4 — DataGrip 과 같은 키).
+   *
+   * 커서 행을 기준으로 **참조하는 쪽(부모)** 과 **참조받는 쪽(자식)** 을 모두 모은다.
+   * 대상이 하나면 바로 열고, 여럿이면 고르게 한다.
+   *
+   * 조건은 문자열 WHERE 가 아니라 `FilterSpec` 으로 넘긴다 — 백엔드가 값 바인딩과
+   * 식별자 quoting 을 하므로 이스케이프·방언 차이를 프론트가 떠안지 않는다.
+   */
+  async function gotoRelated() {
+    if (!cursor || !rows[cursor.row]) return;
+    let rel;
+    try {
+      rel = await api.tableRelations(connId, table);
+    } catch (e) {
+      ui.toastError(e, "관련 레코드 조회 실패");
+      return;
+    }
+
+    const targets: { fk: ForeignKeyRef; outgoing: boolean; filters: FilterSpec[] }[] = [];
+    const add = (fk: ForeignKeyRef, outgoing: boolean) => {
+      // 기준 행의 값으로 상대 테이블을 건다. columns 는 언제나 이 테이블 쪽이다.
+      const filters: FilterSpec[] = [];
+      for (let i = 0; i < fk.columns.length; i++) {
+        const v = cellValue(cursor.row, fk.columns[i]);
+        const target = fk.refColumns[i];
+        if (target === undefined) return; // 컬럼 대응이 깨진 FK 는 건너뛴다
+        // NULL 을 = 로 비교하면 아무것도 안 걸린다. 나가는 FK 가 NULL 이면 부모가 없다는 뜻.
+        if (v === null) {
+          if (outgoing) return;
+          filters.push({ column: target, op: "isnull", value: null });
+        } else {
+          filters.push({ column: target, op: "eq", value: v });
+        }
+      }
+      if (filters.length > 0) targets.push({ fk, outgoing, filters });
+    };
+    rel.outgoing.forEach((fk) => add(fk, true));
+    rel.incoming.forEach((fk) => add(fk, false));
+
+    if (targets.length === 0) {
+      ui.pushToast({
+        kind: "info",
+        title: "관련 레코드 없음",
+        message: "이 행에서 따라갈 외래키가 없습니다.",
+      });
+      return;
+    }
+    if (targets.length === 1) {
+      const t0 = targets[0];
+      openTable(connId, connName, t0.fk.table, t0.filters);
+      return;
+    }
+    setRelPick(targets);
+  }
+
   function onGridKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     // 셀 편집 중에는 에디터(input)가, 값 뷰어가 떠 있으면 모달이 키를 처리한다.
     if (e.target instanceof HTMLInputElement || viewer) return;
@@ -637,6 +708,12 @@ export function DataGridTab({ connId, table }: Props) {
     // ⌘/Ctrl+Shift+N: 선택 셀을 NULL 로
     if (mod && e.shiftKey && e.key.toLowerCase() === "n") {
       setRangeNull();
+      e.preventDefault();
+      return;
+    }
+    // F4: 관련 레코드로 이동 (DataGrip 과 같은 키)
+    if (e.key === "F4") {
+      gotoRelated();
       e.preventDefault();
       return;
     }
@@ -1030,6 +1107,29 @@ export function DataGridTab({ connId, table }: Props) {
         </button>
       </div>
 
+      {relFilters.length > 0 && (
+        <div className="grid-toolbar">
+          <span className="muted">
+            관련 레코드 필터:{" "}
+            <span className="mono">
+              {relFilters
+                .map((f) => `${f.column} ${f.op === "isnull" ? "IS NULL" : `= ${String(f.value)}`}`)
+                .join(" AND ")}
+            </span>
+          </span>
+          <button
+            className="btn sm"
+            onClick={() => {
+              setRelFilters([]);
+              setOffset(0);
+            }}
+            title="필터 없이 전체 보기"
+          >
+            <X size={13} /> 필터 해제
+          </button>
+        </div>
+      )}
+
       {byValues && page && (
         <div className="grid-toolbar" style={{ color: "var(--warning)" }}>
           <Ban size={13} /> 기본 키가 없어 <b>모든 컬럼 값</b>으로 행을 찾습니다. 값이 완전히
@@ -1183,6 +1283,43 @@ export function DataGridTab({ connId, table }: Props) {
           </div>
         )}
       </div>
+
+      {relPick && (
+        <Modal
+          title="관련 레코드"
+          onClose={() => setRelPick(null)}
+          footer={
+            <button className="btn" onClick={() => setRelPick(null)}>
+              닫기
+            </button>
+          }
+        >
+          <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
+            따라갈 관계를 고르세요. 위쪽은 이 행이 <b>참조하는</b> 부모, 아래쪽은 이 행을{" "}
+            <b>참조하는</b> 자식입니다.
+          </div>
+          <div className="rel-list">
+            {relPick.map((r, i) => (
+              <button
+                key={`${r.fk.name}-${i}`}
+                className="rel-item"
+                onClick={() => {
+                  openTable(connId, connName, r.fk.table, r.filters);
+                  setRelPick(null);
+                }}
+              >
+                <span className="rel-dir">{r.outgoing ? "→ 부모" : "← 자식"}</span>
+                <span className="rel-table">{r.fk.table.name}</span>
+                <span className="muted mono rel-cond">
+                  {r.filters
+                    .map((f) => `${f.column} ${f.op === "isnull" ? "IS NULL" : `= ${String(f.value)}`}`)
+                    .join(" AND ")}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
 
       {gotoRow !== null && (
         <GotoRowDialog

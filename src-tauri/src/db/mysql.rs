@@ -225,6 +225,79 @@ impl Driver for MysqlDriver {
             .collect())
     }
 
+    /// MySQL 은 `key_column_usage` 의 `referenced_*` 컬럼으로 FK 를 표현한다.
+    /// 복합 FK 는 `ordinal_position` 순으로 이어 붙여야 컬럼 대응이 맞는다.
+    async fn relations(&self, table: &TableRef) -> Result<TableRelations> {
+        let schema = self.resolve_schema(table).await?;
+        let rows = sqlx::query(
+            "SELECT constraint_name, table_schema, table_name, column_name, \
+                    referenced_table_schema, referenced_table_name, referenced_column_name, \
+                    (table_schema = ? AND table_name = ?) AS is_outgoing \
+             FROM information_schema.key_column_usage \
+             WHERE referenced_table_name IS NOT NULL \
+               AND ((table_schema = ? AND table_name = ?) \
+                 OR (referenced_table_schema = ? AND referenced_table_name = ?)) \
+             ORDER BY constraint_name, ordinal_position",
+        )
+        .bind(&schema)
+        .bind(&table.name)
+        .bind(&schema)
+        .bind(&table.name)
+        .bind(&schema)
+        .bind(&table.name)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // (제약 이름, 방향)으로 묶어야 자기참조 테이블에서 양방향이 섞이지 않는다.
+        let mut acc: std::collections::BTreeMap<(String, bool), ForeignKeyRef> = Default::default();
+        for r in &rows {
+            let name: String = r.try_get("constraint_name").unwrap_or_default();
+            let outgoing: i64 = r.try_get("is_outgoing").unwrap_or(0);
+            let outgoing = outgoing != 0;
+            let col: String = r.try_get("column_name").unwrap_or_default();
+            let ref_col: String = r.try_get("referenced_column_name").unwrap_or_default();
+            let other = if outgoing {
+                TableRef {
+                    database: r.try_get("referenced_table_schema").ok(),
+                    schema: None,
+                    name: r.try_get("referenced_table_name").unwrap_or_default(),
+                }
+            } else {
+                TableRef {
+                    database: r.try_get("table_schema").ok(),
+                    schema: None,
+                    name: r.try_get("table_name").unwrap_or_default(),
+                }
+            };
+            let e = acc
+                .entry((name.clone(), outgoing))
+                .or_insert_with(|| ForeignKeyRef {
+                    name,
+                    columns: Vec::new(),
+                    table: other,
+                    ref_columns: Vec::new(),
+                });
+            // 들어오는 쪽은 방향이 뒤집힌다 — `columns` 는 언제나 **이 테이블**의 컬럼이다.
+            if outgoing {
+                e.columns.push(col);
+                e.ref_columns.push(ref_col);
+            } else {
+                e.columns.push(ref_col);
+                e.ref_columns.push(col);
+            }
+        }
+
+        let mut out = TableRelations::default();
+        for ((_, outgoing), fk) in acc {
+            if outgoing {
+                out.outgoing.push(fk);
+            } else {
+                out.incoming.push(fk);
+            }
+        }
+        Ok(out)
+    }
+
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {
         let schema = self.resolve_schema(table).await?;
         let rows = sqlx::query(

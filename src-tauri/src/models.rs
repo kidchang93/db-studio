@@ -248,6 +248,30 @@ pub struct TableRef {
     pub name: String,
 }
 
+/// 외래키 한 건. 관련 레코드 탐색(F4)에 쓴다.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyRef {
+    /// 제약 이름. 같은 두 테이블 사이에 FK 가 여럿일 때 구분해 보여준다.
+    pub name: String,
+    /// 이 테이블 쪽 컬럼.
+    pub columns: Vec<String>,
+    /// 상대 테이블.
+    pub table: TableRef,
+    /// 상대 테이블 쪽 컬럼. `columns` 와 **순서가 대응**한다(복합 FK).
+    pub ref_columns: Vec<String>,
+}
+
+/// 한 테이블을 기준으로 본 외래키 관계.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableRelations {
+    /// 이 테이블이 **참조하는** 것(나가는 FK). 부모 레코드로 간다.
+    pub outgoing: Vec<ForeignKeyRef>,
+    /// 이 테이블을 **참조하는** 것(들어오는 FK). 자식 레코드로 간다.
+    pub incoming: Vec<ForeignKeyRef>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SortSpec {

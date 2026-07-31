@@ -214,6 +214,24 @@ export interface ApplyChangesResult {
   statements: string[];
 }
 
+/** 외래키 한 건. 관련 레코드 탐색(F4)에 쓴다. */
+export interface ForeignKeyRef {
+  name: string;
+  /** 기준 테이블 쪽 컬럼. 방향과 무관하게 **언제나 기준 테이블**의 컬럼이다. */
+  columns: string[];
+  table: TableRef;
+  /** 상대 테이블 쪽 컬럼. `columns` 와 순서가 대응한다(복합 FK). */
+  refColumns: string[];
+}
+
+/** 한 테이블을 기준으로 본 외래키 관계. */
+export interface TableRelations {
+  /** 이 테이블이 참조하는 것(부모로 간다). */
+  outgoing: ForeignKeyRef[];
+  /** 이 테이블을 참조하는 것(자식으로 간다). */
+  incoming: ForeignKeyRef[];
+}
+
 /** 백엔드 AppError 직렬화 형태. */
 export interface AppError {
   kind: string;

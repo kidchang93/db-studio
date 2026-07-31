@@ -20,6 +20,7 @@ import type {
   TableDdl,
   TableInfo,
   TablePage,
+  TableRelations,
   TableRef,
 } from "../types";
 
@@ -142,4 +143,9 @@ export function runQuery(
 
 export function runExecute(connId: string, sql: string): Promise<ExecResult> {
   return invoke("run_execute", { connId, sql });
+}
+
+/** 관련 레코드 탐색(F4)용 외래키 관계. */
+export function tableRelations(connId: string, table: TableRef): Promise<TableRelations> {
+  return invoke("table_relations", { connId, table });
 }

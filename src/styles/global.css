@@ -1337,3 +1337,45 @@ table.grid tbody tr.selected td {
   padding: 0 2px 0 0;
   cursor: pointer;
 }
+
+/* ===== 관련 레코드(F4) 선택 목록 ===== */
+.rel-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow: auto;
+}
+.rel-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.rel-item:hover {
+  background: var(--bg-hover);
+}
+.rel-dir {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.rel-table {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+/* 조건은 길면 줄인다 — 어느 테이블로 가는지가 먼저다. */
+.rel-cond {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

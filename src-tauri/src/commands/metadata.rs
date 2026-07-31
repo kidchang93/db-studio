@@ -130,3 +130,18 @@ pub async fn table_ddl(
         .table_ddl(&table)
         .await
 }
+
+/// 관련 레코드 탐색(F4)용 외래키 관계. 이 테이블이 참조하는 것과 참조받는 것 양쪽.
+#[tauri::command]
+pub async fn table_relations(
+    state: tauri::State<'_, AppState>,
+    conn_id: String,
+    table: TableRef,
+) -> Result<TableRelations> {
+    state
+        .get(&conn_id)
+        .await?
+        .as_driver()
+        .relations(&table)
+        .await
+}

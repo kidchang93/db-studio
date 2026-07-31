@@ -39,6 +39,12 @@ pub trait Driver: Send + Sync {
     /// 편집(UPDATE/DELETE)의 행 식별용 PK 컬럼.
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>>;
 
+    /// 관련 레코드 탐색(F4)용 외래키 관계.
+    ///
+    /// 카탈로그 모양이 DB 마다 달라 기본 구현을 두지 않고 각 드라이버가 채운다.
+    /// 지원하지 않으면 빈 값을 돌려주면 되고, 그때 UI 는 "관련 레코드 없음"으로 보인다.
+    async fn relations(&self, table: &TableRef) -> Result<TableRelations>;
+
     // ---- 데이터 ----
     async fn fetch_page(&self, req: &FetchPageRequest) -> Result<TablePage>;
     async fn apply_changes(&self, req: &ApplyChangesRequest) -> Result<ApplyChangesResult>;

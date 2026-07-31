@@ -229,6 +229,77 @@ impl Driver for PostgresDriver {
             .collect())
     }
 
+    /// `pg_constraint` 로 양방향 FK 를 한 번에 읽는다.
+    ///
+    /// `information_schema` 보다 이쪽이 **복합 FK 의 컬럼 순서**를 정확히 준다
+    /// (`conkey`/`confkey` 배열의 순서가 곧 대응 순서다).
+    async fn relations(&self, table: &TableRef) -> Result<TableRelations> {
+        let schema = schema_or_default(table);
+        let rows = sqlx::query(
+            "SELECT c.conname AS name, \
+                    (src_ns.nspname = $1 AND src.relname = $2) AS is_outgoing, \
+                    src_ns.nspname AS src_schema, src.relname AS src_table, \
+                    tgt_ns.nspname AS tgt_schema, tgt.relname AS tgt_table, \
+                    ARRAY(SELECT a.attname FROM unnest(c.conkey) WITH ORDINALITY k(attnum, ord) \
+                          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum \
+                          ORDER BY k.ord) AS src_cols, \
+                    ARRAY(SELECT a.attname FROM unnest(c.confkey) WITH ORDINALITY k(attnum, ord) \
+                          JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.attnum \
+                          ORDER BY k.ord) AS tgt_cols \
+             FROM pg_constraint c \
+             JOIN pg_class src ON src.oid = c.conrelid \
+             JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace \
+             JOIN pg_class tgt ON tgt.oid = c.confrelid \
+             JOIN pg_namespace tgt_ns ON tgt_ns.oid = tgt.relnamespace \
+             WHERE c.contype = 'f' \
+               AND ((src_ns.nspname = $1 AND src.relname = $2) \
+                 OR (tgt_ns.nspname = $1 AND tgt.relname = $2))",
+        )
+        .bind(&schema)
+        .bind(&table.name)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = TableRelations::default();
+        for r in &rows {
+            let outgoing: bool = r.try_get("is_outgoing").unwrap_or(false);
+            let src_cols: Vec<String> = r.try_get("src_cols").unwrap_or_default();
+            let tgt_cols: Vec<String> = r.try_get("tgt_cols").unwrap_or_default();
+            let name: String = r.try_get("name").unwrap_or_default();
+            let other = if outgoing {
+                TableRef {
+                    database: None,
+                    schema: r.try_get("tgt_schema").ok(),
+                    name: r.try_get("tgt_table").unwrap_or_default(),
+                }
+            } else {
+                TableRef {
+                    database: None,
+                    schema: r.try_get("src_schema").ok(),
+                    name: r.try_get("src_table").unwrap_or_default(),
+                }
+            };
+            // 들어오는 쪽은 방향이 뒤집힌다 — `columns` 는 언제나 **이 테이블**의 컬럼이다.
+            let (columns, ref_columns) = if outgoing {
+                (src_cols, tgt_cols)
+            } else {
+                (tgt_cols, src_cols)
+            };
+            let fk = ForeignKeyRef {
+                name,
+                columns,
+                table: other,
+                ref_columns,
+            };
+            if outgoing {
+                out.outgoing.push(fk);
+            } else {
+                out.incoming.push(fk);
+            }
+        }
+        Ok(out)
+    }
+
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {
         let schema = schema_or_default(table);
         let rows = sqlx::query(

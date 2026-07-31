@@ -183,6 +183,91 @@ impl Driver for SqliteDriver {
         Ok(pks.into_iter().map(|(_, name)| name).collect())
     }
 
+    /// SQLite 는 FK 를 테이블별 PRAGMA 로만 알려준다.
+    ///
+    /// 나가는 FK 는 대상 테이블 하나만 보면 되지만, **들어오는 FK 는 카탈로그가 없어서**
+    /// 모든 테이블의 PRAGMA 를 훑어야 한다. 스키마가 큰 DB 에서는 그만큼 비용이 든다.
+    async fn relations(&self, table: &TableRef) -> Result<TableRelations> {
+        let mut out = TableRelations::default();
+
+        // 나가는 FK: PRAGMA foreign_key_list(이 테이블)
+        let sql = format!(
+            "PRAGMA foreign_key_list({})",
+            DIALECT.quote_ident(&table.name)
+        );
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .fetch_all(&self.pool)
+            .await?;
+        // 복합 FK 는 id 가 같은 여러 행으로 나뉘어 오므로 id 로 묶는다.
+        let mut by_id: std::collections::BTreeMap<i64, ForeignKeyRef> = Default::default();
+        for r in &rows {
+            let id: i64 = r.try_get("id").unwrap_or(0);
+            let to_table: String = r.try_get("table").unwrap_or_default();
+            let from: String = r.try_get("from").unwrap_or_default();
+            let to: String = r.try_get("to").unwrap_or_default();
+            let e = by_id.entry(id).or_insert_with(|| ForeignKeyRef {
+                name: format!("fk_{}_{}", table.name, id),
+                columns: Vec::new(),
+                table: TableRef {
+                    database: None,
+                    schema: None,
+                    name: to_table.clone(),
+                },
+                ref_columns: Vec::new(),
+            });
+            e.columns.push(from);
+            // `to` 가 비면 상대 테이블의 PK 를 가리킨다(SQLite 규칙).
+            e.ref_columns.push(to);
+        }
+        for (_, mut fk) in by_id {
+            if fk.ref_columns.iter().any(|c| c.is_empty()) {
+                fk.ref_columns = self.primary_keys(&fk.table).await.unwrap_or_default();
+            }
+            out.outgoing.push(fk);
+        }
+
+        // 들어오는 FK: 모든 테이블을 훑어 이 테이블을 가리키는 것을 찾는다.
+        for t in self.list_tables(None, None).await.unwrap_or_default() {
+            if t.name == table.name {
+                continue;
+            }
+            let sql = format!("PRAGMA foreign_key_list({})", DIALECT.quote_ident(&t.name));
+            let Ok(rows) = sqlx::query(AssertSqlSafe(sql)).fetch_all(&self.pool).await else {
+                continue; // 뷰 등 PRAGMA 가 통하지 않는 대상은 건너뛴다
+            };
+            let mut by_id: std::collections::BTreeMap<i64, ForeignKeyRef> = Default::default();
+            for r in &rows {
+                let to_table: String = r.try_get("table").unwrap_or_default();
+                if !to_table.eq_ignore_ascii_case(&table.name) {
+                    continue;
+                }
+                let id: i64 = r.try_get("id").unwrap_or(0);
+                let from: String = r.try_get("from").unwrap_or_default();
+                let to: String = r.try_get("to").unwrap_or_default();
+                let e = by_id.entry(id).or_insert_with(|| ForeignKeyRef {
+                    name: format!("fk_{}_{}", t.name, id),
+                    columns: Vec::new(),
+                    table: TableRef {
+                        database: None,
+                        schema: None,
+                        name: t.name.clone(),
+                    },
+                    ref_columns: Vec::new(),
+                });
+                // 들어오는 쪽은 방향이 뒤집힌다 — `columns` 는 **이 테이블(피참조)** 의 컬럼이다.
+                e.ref_columns.push(from);
+                e.columns.push(to);
+            }
+            for (_, mut fk) in by_id {
+                if fk.columns.iter().any(|c| c.is_empty()) {
+                    fk.columns = self.primary_keys(table).await.unwrap_or_default();
+                }
+                out.incoming.push(fk);
+            }
+        }
+        Ok(out)
+    }
+
     async fn fetch_page(&self, req: &FetchPageRequest) -> Result<TablePage> {
         let built = sql::build_fetch(&DIALECT, req);
         let mut q = sqlx::query(AssertSqlSafe(built.sql));
@@ -513,6 +598,62 @@ mod tests {
             .unwrap();
         assert_eq!(page.result.rows.len(), 2);
         assert_eq!(page.total_rows, Some(2));
+    }
+
+    /// 외래키 관계를 양방향으로 읽는다.
+    ///
+    /// 들어오는 FK 는 SQLite 에 카탈로그가 없어 모든 테이블을 훑어 찾는다 — 그 경로가
+    /// 실제로 맞는 테이블을 집어내는지, 그리고 `columns` 가 **언제나 기준 테이블 쪽**을
+    /// 가리키는지(방향이 뒤집히지 않는지) 고정한다.
+    #[tokio::test]
+    async fn relations_both_directions() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for ddl in [
+            "CREATE TABLE dept (id INTEGER PRIMARY KEY, name TEXT)",
+            "CREATE TABLE emp (id INTEGER PRIMARY KEY, dept_id INTEGER REFERENCES dept(id), \
+             mgr_id INTEGER REFERENCES emp(id))",
+            "CREATE TABLE unrelated (id INTEGER PRIMARY KEY)",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+        }
+        let d = SqliteDriver::from_pool(pool);
+        let t = |name: &str| TableRef {
+            database: None,
+            schema: None,
+            name: name.into(),
+        };
+
+        // emp 기준: dept 로 나가고(+ 자기참조), 자기참조로 들어온다.
+        let r = d.relations(&t("emp")).await.unwrap();
+        let to_dept = r
+            .outgoing
+            .iter()
+            .find(|f| f.table.name == "dept")
+            .expect("emp → dept 가 없다");
+        assert_eq!(to_dept.columns, vec!["dept_id"]);
+        assert_eq!(to_dept.ref_columns, vec!["id"]);
+
+        // dept 기준: 나가는 것은 없고 emp 가 들어온다.
+        let r = d.relations(&t("dept")).await.unwrap();
+        assert!(r.outgoing.is_empty(), "dept 는 참조하는 것이 없다");
+        let from_emp = r
+            .incoming
+            .iter()
+            .find(|f| f.table.name == "emp")
+            .expect("dept ← emp 가 없다");
+        // 들어오는 쪽도 `columns` 는 기준 테이블(dept)의 컬럼이어야 한다.
+        assert_eq!(from_emp.columns, vec!["id"], "방향이 뒤집혔다");
+        assert_eq!(from_emp.ref_columns, vec!["dept_id"]);
+
+        // 무관한 테이블은 어느 쪽에도 끼지 않는다.
+        assert!(
+            !r.incoming.iter().any(|f| f.table.name == "unrelated"),
+            "관계없는 테이블이 섞였다"
+        );
     }
 
     /// 기본 키가 없는 테이블도 편집할 수 있다. 행은 **컬럼 값 조합**으로 찾는다.

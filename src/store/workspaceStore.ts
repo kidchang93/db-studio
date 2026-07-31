@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { TableRef } from "../types";
+import type { FilterSpec, TableRef } from "../types";
 
 export interface TableTab {
   id: string;
@@ -7,6 +7,14 @@ export interface TableTab {
   connId: string;
   connName: string;
   table: TableRef;
+  /**
+   * 탭을 열 때 적용할 필터. 관련 레코드 탐색(F4)이 대상 테이블을 걸러진 상태로 여는 데 쓴다.
+   *
+   * 문자열 WHERE 가 아니라 `FilterSpec` 인 이유는, 이쪽이 백엔드에서 **값 바인딩 + 식별자
+   * quoting** 을 거치기 때문이다(`db/sql.rs` 의 `build_where`). 값을 SQL 에 이어 붙이면
+   * 이스케이프를 프론트가 떠안고 DB 방언 차이까지 프론트로 새어 나온다.
+   */
+  initialFilters?: FilterSpec[];
 }
 
 export interface QueryTab {
@@ -26,7 +34,12 @@ function tableKey(connId: string, table: TableRef): string {
 interface WorkspaceState {
   tabs: Tab[];
   activeTabId: string | null;
-  openTable: (connId: string, connName: string, table: TableRef) => void;
+  openTable: (
+    connId: string,
+    connName: string,
+    table: TableRef,
+    initialFilters?: FilterSpec[],
+  ) => void;
   openQuery: (connId: string, connName: string) => void;
   closeTab: (id: string) => void;
   setActive: (id: string) => void;
@@ -40,12 +53,26 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   tabs: [],
   activeTabId: null,
 
-  openTable: (connId, connName, table) => {
+  openTable: (connId, connName, table, initialFilters) => {
     const key = tableKey(connId, table);
     const existing = get().tabs.find(
       (t) => t.kind === "table" && tableKey(t.connId, t.table) === key,
     );
     if (existing) {
+      // 이미 열려 있는데 새 조건으로 들어오면(F4 등) 탭을 갈아 끼워 다시 그린다.
+      // 같은 탭을 재사용하면서 조건만 바꾸면 그리드가 그것을 알아챌 방법이 없다.
+      if (initialFilters !== undefined) {
+        const replaced: TableTab = {
+          ...(existing as TableTab),
+          id: crypto.randomUUID(),
+          initialFilters,
+        };
+        set((s) => ({
+          tabs: s.tabs.map((t) => (t.id === existing.id ? replaced : t)),
+          activeTabId: replaced.id,
+        }));
+        return;
+      }
       set({ activeTabId: existing.id });
       return;
     }
@@ -55,6 +82,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       connId,
       connName,
       table,
+      initialFilters,
     };
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
   },

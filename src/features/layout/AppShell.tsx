@@ -124,7 +124,11 @@ export function AppShell() {
                     style={{ display: t.id === activeTabId ? "flex" : "none" }}
                   >
                     {t.kind === "table" ? (
-                      <DataGridTab connId={t.connId} table={t.table} />
+                      <DataGridTab
+                        connId={t.connId}
+                        table={t.table}
+                        initialFilters={t.initialFilters}
+                      />
                     ) : (
                       <QueryTab connId={t.connId} tabId={t.id} />
                     )}
