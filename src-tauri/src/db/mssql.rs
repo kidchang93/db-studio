@@ -237,9 +237,15 @@ impl MssqlDriver {
             cfg.database(db);
         }
         cfg.authentication(AuthMethod::sql_server(&username, &password));
-        if let Some(app) = config.params.get("application_name") {
-            cfg.application_name(app);
-        }
+        // 서버의 세션 목록(`sys.dm_exec_sessions.program_name`)에서 어떤 클라이언트인지
+        // 구분할 수 있게 기본 이름을 준다. 세션이 남았을 때 누구 것인지 알아야 정리할 수 있다.
+        cfg.application_name(
+            config
+                .params
+                .get("application_name")
+                .map(String::as_str)
+                .unwrap_or("DB Studio"),
+        );
 
         // SSL/TLS: 지정이 있으면 그에 따르고, 없으면 사내망 편의를 위해 서버 인증서를 신뢰.
         match &config.ssl {
@@ -283,6 +289,19 @@ impl MssqlDriver {
         *guard = Self::open(&self.config).await?;
         let rows = guard.query(sql, &refs).await?.into_first_result().await?;
         Ok(rows)
+    }
+
+    /// 실행 컨텍스트를 세션에 적용한다.
+    ///
+    /// tiberius 는 단일 커넥션이라 sqlx 처럼 "다른 커넥션에 걸리는" 문제가 없다.
+    /// 스키마는 SQL Server 에서 세션 단위로 바꿀 수 없어(사용자 기본 스키마 속성) 무시한다 —
+    /// 대신 콘솔에서 `dbo.` 처럼 명시하면 된다.
+    async fn apply_ctx(&self, ctx: &ExecContext) -> Result<()> {
+        if let Some(db) = ctx.db() {
+            let stmt = format!("USE {}", DIALECT.quote_ident(db));
+            self.simple_rows(&stmt).await?;
+        }
+        Ok(())
     }
 
     async fn simple_rows(&self, sql: &str) -> Result<Vec<TdsRow>> {
@@ -588,8 +607,14 @@ impl Driver for MssqlDriver {
         Ok(res)
     }
 
-    async fn run_query(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
+    async fn run_query(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        ctx: &ExecContext,
+    ) -> Result<QueryResult> {
         let start = Instant::now();
+        self.apply_ctx(ctx).await?;
         let mut rows = self.simple_rows(sql).await?;
         let truncated = rows.len() > max_rows;
         if truncated {
@@ -712,7 +737,8 @@ impl Driver for MssqlDriver {
         DIALECT
     }
 
-    async fn run_execute(&self, sql: &str) -> Result<ExecResult> {
+    async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult> {
+        self.apply_ctx(ctx).await?;
         let start = Instant::now();
         let empty: Vec<&dyn ToSql> = Vec::new();
         let mut guard = self.client.lock().await;
@@ -1400,7 +1426,7 @@ mod tests {
         .expect("insert");
 
         let r = d
-            .run_query("SELECT * FROM dbo.kr_test", 10)
+            .run_query("SELECT * FROM dbo.kr_test", 10, &ExecContext::default())
             .await
             .expect("조회");
         // 한국어 collation 의 varchar 는 드라이버가 코드페이지로 바르게 디코딩한다.
@@ -1425,7 +1451,11 @@ mod tests {
             .expect("insert no-N");
 
         let r = d
-            .run_query("SELECT tag, nv FROM dbo.n_test ORDER BY tag", 10)
+            .run_query(
+                "SELECT tag, nv FROM dbo.n_test ORDER BY tag",
+                10,
+                &ExecContext::default(),
+            )
             .await
             .expect("조회");
         assert_eq!(cell(&r, "nv", 1), "영업부", "N 을 붙이면 정상이어야 한다");
@@ -1435,6 +1465,7 @@ mod tests {
             .run_query(
                 "SELECT CONVERT(NVARCHAR(128), DATABASEPROPERTYEX(DB_NAME(),'Collation')) AS c",
                 1,
+                &ExecContext::default(),
             )
             .await
             .expect("collation");

@@ -10,7 +10,7 @@ import {
 } from "react-resizable-panels";
 import * as api from "../../api";
 import { ResultTable } from "../grid/ResultTable";
-import type { DbKind, ExecResult, QueryResult } from "../../types";
+import type { DbKind, ExecContext, ExecResult, QueryResult } from "../../types";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useHistoryStore } from "../../store/historyStore";
@@ -57,6 +57,15 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     null,
   );
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  /**
+   * 이 콘솔이 실행될 DB·스키마. 비우면 연결 기본값을 쓴다.
+   *
+   * 콘솔마다 따로 갖는다 — 탭을 여럿 열어 서로 다른 DB 를 보는 것이 흔한 사용이고,
+   * 백엔드가 쿼리와 같은 커넥션에서 컨텍스트를 적용하므로 탭끼리 간섭하지 않는다.
+   */
+  const [ctx, setCtx] = useState<ExecContext>({ database: null, schema: null });
+  const [dbs, setDbs] = useState<string[]>([]);
+  const [schemas, setSchemas] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   /** N 접두사 경고 대기 중인 실행. 확인을 받으면 `proceed` 를 부른다. */
   const [nWarn, setNWarn] = useState<{ literals: string[]; proceed: () => void } | null>(
@@ -131,6 +140,34 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     ui.toastError(e, title);
   }
 
+  // DB 목록은 탭이 열릴 때 한 번 읽는다.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listDatabases(connId)
+      .then((d) => !cancelled && setDbs(d.map((x) => x.name)))
+      .catch(() => {
+        /* 목록을 못 읽어도 콘솔 자체는 쓸 수 있어야 한다 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connId]);
+
+  // 스키마는 고른 DB 를 따라간다.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listSchemas(connId, ctx.database ?? null)
+      .then((s) => !cancelled && setSchemas(s.map((x) => x.name)))
+      .catch(() => {
+        /* 스키마 계층이 없는 DB(MySQL·SQLite)는 빈 목록이 정상 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, ctx.database]);
+
   async function runAuto() {
     if (returnsRows(text)) await run();
     else await runScript();
@@ -141,7 +178,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     setExec(null);
     setSqlError(null);
     try {
-      const r = await api.runQuery(connId, text, 5000);
+      const r = await api.runQuery(connId, text, 5000, ctx);
       setResult(r);
       addHistory({
         sql: text,
@@ -173,7 +210,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     setResult(null);
     setSqlError(null);
     try {
-      const r = await api.runExecute(connId, text);
+      const r = await api.runExecute(connId, text, ctx);
       setExec(r);
       addHistory({
         sql: text,
@@ -231,6 +268,36 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
             <History size={13} /> 히스토리
           </button>
           <span className="spacer" />
+          {dbs.length > 0 && (
+            <select
+              className="select sm"
+              value={ctx.database ?? ""}
+              onChange={(e) => setCtx({ database: e.target.value || null, schema: null })}
+              title="이 콘솔이 실행될 데이터베이스"
+            >
+              <option value="">(연결 기본값)</option>
+              {dbs.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          )}
+          {schemas.length > 0 && (
+            <select
+              className="select sm"
+              value={ctx.schema ?? ""}
+              onChange={(e) => setCtx((c) => ({ ...c, schema: e.target.value || null }))}
+              title="이 콘솔이 실행될 스키마"
+            >
+              <option value="">(기본 스키마)</option>
+              {schemas.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          )}
           <span className="muted">최대 5000행 표시</span>
 
           {historyOpen && (

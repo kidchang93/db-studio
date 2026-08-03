@@ -1404,3 +1404,10 @@ table.grid tbody tr.selected td {
   max-height: 120px;
   overflow: auto;
 }
+
+/* 콘솔 툴바의 컨텍스트 선택 — 툴바 높이에 맞춘 작은 select. */
+.select.sm {
+  padding: 2px 4px;
+  font-size: 12px;
+  max-width: 180px;
+}

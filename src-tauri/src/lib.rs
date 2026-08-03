@@ -10,6 +10,7 @@ mod profiles;
 mod state;
 
 use state::AppState;
+use tauri::Manager;
 
 /// macOS 기본 메뉴에서 **"창 닫기"(⌘W)를 뺀** 메뉴를 만든다.
 ///
@@ -97,6 +98,17 @@ pub fn run() {
             commands::query::run_execute,
             commands::query::write_text_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 앱이 끝날 때 열린 연결을 **명시적으로** 닫는다.
+            //
+            // 프로세스가 그냥 사라져도 OS 가 소켓을 정리하긴 하지만, 서버가 그것을
+            // 알아채기까지 세션이 남아 있는다(TCP keepalive 타임아웃). 연결 수가
+            // 제한된 운영 DB 에서는 그 사이에 자리를 차지하므로 직접 닫아 준다.
+            if let tauri::RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                tauri::async_runtime::block_on(state.close_all());
+            }
+        });
 }

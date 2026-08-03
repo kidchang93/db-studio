@@ -50,10 +50,14 @@ pub trait Driver: Send + Sync {
     async fn apply_changes(&self, req: &ApplyChangesRequest) -> Result<ApplyChangesResult>;
 
     /// 임의 SELECT. `max_rows` 를 초과하면 잘라내고 `truncated=true`.
-    async fn run_query(&self, sql: &str, max_rows: usize) -> Result<QueryResult>;
+    ///
+    /// `ctx` 는 실행할 DB·스키마다. **반드시 쿼리와 같은 커넥션에서 적용해야 한다** —
+    /// 풀에서 따로 꺼낸 커넥션에 `USE` 를 걸면 정작 쿼리는 다른 커넥션에서 돈다.
+    async fn run_query(&self, sql: &str, max_rows: usize, ctx: &ExecContext)
+        -> Result<QueryResult>;
 
-    /// 임의 DML/DDL. 영향 행 수 반환.
-    async fn run_execute(&self, sql: &str) -> Result<ExecResult>;
+    /// 임의 DML/DDL. 영향 행 수 반환. `ctx` 의 의미는 [`Driver::run_query`] 와 같다.
+    async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult>;
 
     /// 이 드라이버의 SQL 방언. 아래 기본 구현들이 DDL 을 만들 때 쓴다.
     fn dialect(&self) -> sql::Dialect;
@@ -121,7 +125,9 @@ pub trait Driver: Send + Sync {
             return Err(AppError::Validation(plan.blockers.join(" / ")));
         }
         for stmt in &plan.statements {
-            self.run_execute(stmt).await.map_err(|e| e.with_sql(stmt))?;
+            self.run_execute(stmt, &ExecContext::default())
+                .await
+                .map_err(|e| e.with_sql(stmt))?;
         }
         Ok(plan)
     }
@@ -280,14 +286,16 @@ pub trait Driver: Send + Sync {
             return Err(AppError::Validation(plan.blockers.join(" / ")));
         }
         for stmt in &plan.statements {
-            self.run_execute(stmt).await.map_err(|e| e.with_sql(stmt))?;
+            self.run_execute(stmt, &ExecContext::default())
+                .await
+                .map_err(|e| e.with_sql(stmt))?;
         }
         Ok(plan)
     }
 
     /// COUNT(*) 한 건을 정수로 읽는다. 큰 정수는 문자열로 내려올 수 있어 양쪽을 받는다.
     async fn scalar_count(&self, sql: &str) -> Result<u64> {
-        let r = self.run_query(sql, 1).await?;
+        let r = self.run_query(sql, 1, &ExecContext::default()).await?;
         let v = r
             .rows
             .first()
@@ -324,6 +332,8 @@ impl DbConnection {
             DbConnection::Postgres(d) => d.close().await,
             DbConnection::Mysql(d) => d.close().await,
             DbConnection::Sqlite(d) => d.close().await,
+            // tiberius 의 close 는 self 를 소비하는데 여기서는 Mutex 안이라 꺼낼 수 없다.
+            // 대신 이 값이 drop 될 때 TcpStream 이 닫히면서 서버가 세션을 정리한다.
             DbConnection::Mssql(_) => {}
         }
     }

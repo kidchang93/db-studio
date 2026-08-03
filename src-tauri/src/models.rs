@@ -248,6 +248,29 @@ pub struct TableRef {
     pub name: String,
 }
 
+/// SQL 콘솔이 실행될 컨텍스트(현재 DB·스키마).
+///
+/// 지정하지 않으면 연결 시 정해진 기본값을 그대로 쓴다. 어떤 항목을 실제로 바꿀 수
+/// 있는지는 DB 마다 다르다 — PostgreSQL 은 DB 가 연결 단위라 스키마만 바꿀 수 있다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecContext {
+    #[serde(default)]
+    pub database: Option<String>,
+    #[serde(default)]
+    pub schema: Option<String>,
+}
+
+impl ExecContext {
+    /// 비어 있지 않은 값만 돌려준다(빈 문자열은 "지정 안 함"과 같게 취급).
+    pub fn db(&self) -> Option<&str> {
+        self.database.as_deref().filter(|s| !s.trim().is_empty())
+    }
+    pub fn sch(&self) -> Option<&str> {
+        self.schema.as_deref().filter(|s| !s.trim().is_empty())
+    }
+}
+
 /// 외래키 한 건. 관련 레코드 탐색(F4)에 쓴다.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

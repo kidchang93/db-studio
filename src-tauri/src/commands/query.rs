@@ -12,12 +12,17 @@ pub async fn run_query(
     conn_id: String,
     sql: String,
     max_rows: Option<usize>,
+    ctx: Option<ExecContext>,
 ) -> Result<QueryResult> {
     state
         .get(&conn_id)
         .await?
         .as_driver()
-        .run_query(&sql, max_rows.unwrap_or(DEFAULT_MAX_ROWS))
+        .run_query(
+            &sql,
+            max_rows.unwrap_or(DEFAULT_MAX_ROWS),
+            &ctx.unwrap_or_default(),
+        )
         .await
 }
 
@@ -26,12 +31,13 @@ pub async fn run_execute(
     state: tauri::State<'_, AppState>,
     conn_id: String,
     sql: String,
+    ctx: Option<ExecContext>,
 ) -> Result<ExecResult> {
     state
         .get(&conn_id)
         .await?
         .as_driver()
-        .run_execute(&sql)
+        .run_execute(&sql, &ctx.unwrap_or_default())
         .await
 }
 

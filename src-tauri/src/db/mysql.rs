@@ -68,6 +68,22 @@ impl MysqlDriver {
         self.pool.close().await;
     }
 
+    /// 실행 컨텍스트를 **주어진 커넥션에** 적용한다.
+    /// MySQL 은 database 와 schema 가 같은 개념이라 어느 쪽이 와도 `USE` 로 처리한다.
+    async fn apply_ctx(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<sqlx::MySql>,
+        ctx: &ExecContext,
+    ) -> Result<()> {
+        if let Some(db) = ctx.db().or_else(|| ctx.sch()) {
+            let stmt = format!("USE {}", DIALECT.quote_ident(db));
+            sqlx::query(AssertSqlSafe(stmt))
+                .execute(&mut **conn)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn current_database(&self) -> Result<String> {
         let db: Option<String> = sqlx::query_scalar("SELECT DATABASE()")
             .fetch_one(&self.pool)
@@ -389,9 +405,17 @@ impl Driver for MysqlDriver {
         Ok(res)
     }
 
-    async fn run_query(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
+    async fn run_query(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        ctx: &ExecContext,
+    ) -> Result<QueryResult> {
         let start = Instant::now();
-        let mut stream = sqlx::query(AssertSqlSafe(sql.to_string())).fetch(&self.pool);
+        // 컨텍스트와 쿼리는 **같은 커넥션**이어야 한다. 풀에서 각자 꺼내면 따로 논다.
+        let mut conn = self.pool.acquire().await?;
+        self.apply_ctx(&mut conn, ctx).await?;
+        let mut stream = sqlx::query(AssertSqlSafe(sql.to_string())).fetch(&mut *conn);
         let mut rows: Vec<MySqlRow> = Vec::new();
         let mut truncated = false;
         while let Some(row) = stream.try_next().await? {
@@ -426,10 +450,12 @@ impl Driver for MysqlDriver {
         DIALECT
     }
 
-    async fn run_execute(&self, sql: &str) -> Result<ExecResult> {
+    async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult> {
         let start = Instant::now();
+        let mut conn = self.pool.acquire().await?;
+        self.apply_ctx(&mut conn, ctx).await?;
         let r = sqlx::raw_sql(AssertSqlSafe(sql))
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
         Ok(ExecResult {
             rows_affected: r.rows_affected(),

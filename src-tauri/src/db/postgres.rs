@@ -54,9 +54,14 @@ impl PostgresDriver {
                 opts = opts.ssl_client_key(key);
             }
         }
-        if let Some(app) = config.params.get("application_name") {
-            opts = opts.application_name(app);
-        }
+        // `pg_stat_activity.application_name` 에서 우리 앱 세션을 구분할 수 있게 한다.
+        opts = opts.application_name(
+            config
+                .params
+                .get("application_name")
+                .map(String::as_str)
+                .unwrap_or("DB Studio"),
+        );
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect_with(opts)
@@ -66,6 +71,24 @@ impl PostgresDriver {
 
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+
+    /// 실행 컨텍스트를 **주어진 커넥션에** 적용한다.
+    ///
+    /// PostgreSQL 은 DB 가 연결 단위라 세션에서 바꿀 수 없다 — 다른 DB 를 고르려면
+    /// 연결을 새로 열어야 하므로 여기서는 무시하고, 스키마만 `search_path` 로 맞춘다.
+    async fn apply_ctx(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
+        ctx: &ExecContext,
+    ) -> Result<()> {
+        if let Some(s) = ctx.sch() {
+            let stmt = format!("SET search_path TO {}", DIALECT.quote_ident(s));
+            sqlx::query(AssertSqlSafe(stmt))
+                .execute(&mut **conn)
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -396,9 +419,17 @@ impl Driver for PostgresDriver {
         Ok(res)
     }
 
-    async fn run_query(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
+    async fn run_query(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        ctx: &ExecContext,
+    ) -> Result<QueryResult> {
         let start = Instant::now();
-        let mut stream = sqlx::query(AssertSqlSafe(sql.to_string())).fetch(&self.pool);
+        // 컨텍스트와 쿼리는 **같은 커넥션**이어야 한다. 풀에서 각자 꺼내면 따로 논다.
+        let mut conn = self.pool.acquire().await?;
+        self.apply_ctx(&mut conn, ctx).await?;
+        let mut stream = sqlx::query(AssertSqlSafe(sql.to_string())).fetch(&mut *conn);
         let mut rows: Vec<PgRow> = Vec::new();
         let mut truncated = false;
         while let Some(row) = stream.try_next().await? {
@@ -419,10 +450,12 @@ impl Driver for PostgresDriver {
         DIALECT
     }
 
-    async fn run_execute(&self, sql: &str) -> Result<ExecResult> {
+    async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult> {
         let start = Instant::now();
+        let mut conn = self.pool.acquire().await?;
+        self.apply_ctx(&mut conn, ctx).await?;
         let r = sqlx::raw_sql(AssertSqlSafe(sql))
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
         Ok(ExecResult {
             rows_affected: r.rows_affected(),

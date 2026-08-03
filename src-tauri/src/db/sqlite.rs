@@ -346,7 +346,13 @@ impl Driver for SqliteDriver {
         Ok(res)
     }
 
-    async fn run_query(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
+    /// SQLite 는 DB·스키마 개념이 없어 `ctx` 는 무시한다.
+    async fn run_query(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        _ctx: &ExecContext,
+    ) -> Result<QueryResult> {
         let start = Instant::now();
         let mut stream = sqlx::query(AssertSqlSafe(sql.to_string())).fetch(&self.pool);
         let mut rows: Vec<SqliteRow> = Vec::new();
@@ -389,7 +395,7 @@ impl Driver for SqliteDriver {
         DIALECT
     }
 
-    async fn run_execute(&self, sql: &str) -> Result<ExecResult> {
+    async fn run_execute(&self, sql: &str, _ctx: &ExecContext) -> Result<ExecResult> {
         let start = Instant::now();
         let r = sqlx::raw_sql(AssertSqlSafe(sql))
             .execute(&self.pool)
@@ -519,7 +525,10 @@ mod tests {
         assert_eq!(del.deleted, 1);
 
         // 최종 상태 확인: 1행, name=ALICE
-        let q = d.run_query("SELECT name FROM users", 100).await.unwrap();
+        let q = d
+            .run_query("SELECT name FROM users", 100, &ExecContext::default())
+            .await
+            .unwrap();
         assert_eq!(q.rows.len(), 1);
         assert_eq!(q.rows[0][0], Value::from("ALICE"));
     }
@@ -560,7 +569,10 @@ mod tests {
         assert_eq!(page.total_rows, Some(3));
 
         // truncate: max_rows=2
-        let q = d.run_query("SELECT * FROM users", 2).await.unwrap();
+        let q = d
+            .run_query("SELECT * FROM users", 2, &ExecContext::default())
+            .await
+            .unwrap();
         assert_eq!(q.rows.len(), 2);
         assert!(q.truncated);
     }

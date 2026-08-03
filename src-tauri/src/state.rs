@@ -50,4 +50,13 @@ impl AppState {
             conn.close().await;
         }
     }
+
+    /// 열린 연결을 모두 닫는다. 앱 종료 시 서버에 세션을 남기지 않기 위한 정리다.
+    pub async fn close_all(&self) {
+        // 락을 쥔 채 close 를 기다리지 않도록 먼저 꺼낸다.
+        let conns: Vec<_> = self.conns.lock().await.drain().map(|(_, c)| c).collect();
+        for conn in conns {
+            conn.close().await;
+        }
+    }
 }

@@ -11,6 +11,7 @@ import type {
   ConnectionHandle,
   ConnectionProfile,
   DatabaseInfo,
+  ExecContext,
   ExecResult,
   FetchPageRequest,
   DdlPlan,
@@ -137,12 +138,17 @@ export function runQuery(
   connId: string,
   sql: string,
   maxRows?: number | null,
+  ctx?: ExecContext,
 ): Promise<QueryResult> {
-  return invoke("run_query", { connId, sql, maxRows: maxRows ?? null });
+  return invoke("run_query", { connId, sql, maxRows: maxRows ?? null, ctx });
 }
 
-export function runExecute(connId: string, sql: string): Promise<ExecResult> {
-  return invoke("run_execute", { connId, sql });
+export function runExecute(
+  connId: string,
+  sql: string,
+  ctx?: ExecContext,
+): Promise<ExecResult> {
+  return invoke("run_execute", { connId, sql, ctx });
 }
 
 /** 관련 레코드 탐색(F4)용 외래키 관계. */

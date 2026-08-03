@@ -214,6 +214,18 @@ export interface ApplyChangesResult {
   statements: string[];
 }
 
+/**
+ * SQL 콘솔이 실행될 컨텍스트. 지정하지 않으면 연결 기본값을 쓴다.
+ *
+ * 무엇을 실제로 바꿀 수 있는지는 DB 마다 다르다 — PostgreSQL 은 DB 가 연결 단위라
+ * 스키마만, SQL Server 는 DB 만(스키마는 세션에서 못 바꾼다), MySQL 은 DB(=스키마),
+ * SQLite 는 둘 다 해당 없음.
+ */
+export interface ExecContext {
+  database?: string | null;
+  schema?: string | null;
+}
+
 /** 외래키 한 건. 관련 레코드 탐색(F4)에 쓴다. */
 export interface ForeignKeyRef {
   name: string;
