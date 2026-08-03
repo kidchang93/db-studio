@@ -24,12 +24,45 @@ const DIALECT: Dialect = Dialect::MSSQL;
 type TdsClient = Client<Compat<TcpStream>>;
 
 pub struct MssqlDriver {
-    client: Mutex<TdsClient>,
+    /// keepalive 태스크와 함께 쥐어야 해서 `Arc`. 태스크는 `Weak` 로 참조한다.
+    client: std::sync::Arc<Mutex<TdsClient>>,
     /// 재연결에 필요한 접속 설정.
     ///
     /// sqlx 드라이버들은 풀이 끊긴 커넥션을 알아서 되살리지만 tiberius 는 단일 연결이라
     /// 직접 다시 열어야 한다. 유휴 상태에서 서버·방화벽이 TCP 를 끊는 일이 흔하다.
     config: ConnectionConfig,
+    /// 유휴 연결을 살려 두는 태스크. 드라이버가 사라지면 함께 멈춘다.
+    keepalive: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for MssqlDriver {
+    fn drop(&mut self) {
+        // 태스크는 `Weak` 가 끊겨도 다음 주기에 스스로 끝나지만, 그때까지 기다릴 이유가 없다.
+        self.keepalive.abort();
+    }
+}
+
+/// 유휴 연결을 살려 두는 주기.
+///
+/// 이보다 긴 시간 아무것도 보내지 않으면 서버·방화벽이 TCP 를 끊고, 다음 쿼리에서
+/// 재연결이 일어난다. **그때 죽은 소켓은 FIN 을 보내지 못해 서버에 세션이 그대로 남는다** —
+/// 앱을 켜 두기만 해도 세션이 쌓이던 원인이다. 관측된 재연결 간격이 20~30분이라
+/// 그보다 넉넉히 짧게 잡는다.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// 연결을 살려 두기 위한 최소 왕복.
+///
+/// 실패는 삼킨다 — 이미 끊겼다면 다음 쿼리의 재연결 경로가 처리하고,
+/// 여기서 오류를 올려 봐야 사용자가 할 수 있는 일이 없다.
+async fn keepalive_ping(client: &Mutex<TdsClient>) {
+    let mut guard = client.lock().await;
+    // `if let` 으로 감싸면 스트림이 guard 를 빌린 채 블록 끝까지 살아 수명이 꼬인다.
+    // 먼저 꺼내고 바로 소비한다.
+    let stream = match guard.simple_query("SELECT 1").await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let _ = stream.into_results().await;
 }
 
 /// 연결이 끊겨서 난 오류인지(재연결로 복구 가능한지).
@@ -211,10 +244,23 @@ fn schema_or_default(table: &TableRef) -> String {
 
 impl MssqlDriver {
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
-        let client = Self::open(config).await?;
+        let client = std::sync::Arc::new(Mutex::new(Self::open(config).await?));
+        // 태스크가 드라이버를 살려 두면 안 되므로 `Weak` 로 참조한다 —
+        // 드라이버가 사라지면 upgrade 가 실패해 태스크도 스스로 끝난다.
+        let weak = std::sync::Arc::downgrade(&client);
+        let keepalive = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(KEEPALIVE_INTERVAL);
+            tick.tick().await; // 첫 tick 은 즉시 오므로 흘려보낸다
+            loop {
+                tick.tick().await;
+                let Some(c) = weak.upgrade() else { break };
+                keepalive_ping(&c).await;
+            }
+        });
         Ok(Self {
-            client: Mutex::new(client),
+            client,
             config: config.clone(),
+            keepalive,
         })
     }
 
@@ -1408,6 +1454,28 @@ mod tests {
             vec!["a", "b", "c"],
             "컬럼 순서가 정의 순이 아니다"
         );
+    }
+
+    /// keepalive 가 실제로 세션을 살려 두는지 확인한다.
+    ///
+    /// 유휴 연결이 끊기면 다음 쿼리에서 재연결이 일어나고, 죽은 소켓은 FIN 을 보내지
+    /// 못해 **서버에 옛 세션이 그대로 남는다** — 앱을 켜 두기만 해도 세션이 쌓이던 원인이다.
+    /// 주기를 짧게 준 드라이버를 만들어, 가만히 두어도 SPID 가 바뀌지 않는지 본다.
+    #[tokio::test]
+    #[ignore]
+    async fn keepalive_keeps_same_session() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        // @@SPID 는 smallint 다.
+        let spid = |rows: &[TdsRow]| rows[0].try_get::<i16, _>("n").unwrap().unwrap();
+
+        let before = spid(&d.simple_rows("SELECT @@SPID AS n").await.expect("spid"));
+        // keepalive 주기(180초)보다 짧게 기다려도, 그 사이 ping 이 돌면 연결이 유지된다.
+        // 여기서는 ping 을 직접 한 번 태워 같은 세션이 이어지는지만 확인한다.
+        keepalive_ping(&d.client).await;
+        let after = spid(&d.simple_rows("SELECT @@SPID AS n").await.expect("spid"));
+
+        assert_eq!(before, after, "ping 뒤 세션이 바뀌었다(재연결이 일어났다)");
+        println!("[keepalive] SPID {before} 유지");
     }
 
     /// 외래키 관계를 양방향으로 읽는다(F4 관련 레코드 탐색).

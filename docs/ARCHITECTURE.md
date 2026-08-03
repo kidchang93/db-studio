@@ -106,6 +106,7 @@ profiles ◄── commands (연결 저장/로드 시)
 
 - `AppState`는 `connId(String) → DbConnection` 맵을 `tokio::sync::Mutex`로 보관한다. `connId`는 연결 시 발급하는 불투명 ID.
 - 커넥션은 내부적으로 커넥션 **풀**(sqlx `Pool`, tiberius는 관리형 커넥션)을 쥔다. 동시 쿼리는 풀에서 처리.
+- **SQL Server 는 유휴 연결에 주기적으로 `SELECT 1` 을 보낸다**(`KEEPALIVE_INTERVAL`, 3분). 이보다 오래 조용하면 서버·방화벽이 TCP 를 끊고, 다음 쿼리에서 재연결이 일어난다. 그때 죽은 소켓은 FIN 을 보내지 못해 **서버에 옛 세션이 그대로 남는다** — 앱을 켜 두기만 해도 20~30분마다 세션이 하나씩 쌓이던 원인이다. 태스크는 클라이언트를 `Weak` 로 참조해 드라이버가 사라지면 함께 끝난다. sqlx 계열은 풀이 커넥션을 닫을 때 정상 종료를 보내므로 해당 없다.
 - **커넥션 하나가 서버 세션 하나다.** sqlx 풀은 최대 3개로 두고(그리드 조회 + 콘솔 실행이 겹쳐도 충분하다) 유휴 3분·수명 30분으로 회수한다. 앱을 켜 둔 채 손을 놓는 시간이 길어서, 그동안 자리를 붙들고 있을 이유가 없다.
 - 앱 종료/명시적 disconnect 시 풀을 닫는다. **종료 경로는 두 갈래다** — 정상 종료는 `RunEvent::Exit`, 시그널(SIGTERM·SIGINT)은 `setup` 에서 띄운 핸들러가 잡는다. 둘 다 `AppState::close_all` 을 부른다. `RunEvent::Exit` 만으로는 부족하다 — `tauri dev` 가 재빌드하며 앱을 죽이거나 `kill` 로 끝낼 때는 오지 않아 세션이 그대로 남는다(개발 중 세션이 100개 넘게 쌓인 원인). SIGKILL 은 어떤 코드로도 잡을 수 없어 예외다 — 프로세스가 그냥 사라져도 OS 가 소켓을 정리하긴 하지만 서버가 그것을 알아채기까지 세션이 남아 있어(TCP keepalive 타임아웃), 연결 수가 제한된 운영 DB 에서는 그 사이에 자리를 차지한다.
 - 각 드라이버는 접속 시 `application_name` 을 **"DB Studio"** 로 채운다(사용자가 `params` 로 지정하면 그것을 쓴다). 서버의 세션 목록(`sys.dm_exec_sessions.program_name` · `pg_stat_activity.application_name`)에서 우리 앱 세션을 구분해 남은 것을 찾아낼 수 있어야 하기 때문이다.
