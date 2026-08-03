@@ -70,6 +70,8 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const [schemas, setSchemas] = useState<string[]>([]);
   /** 자동완성용 테이블→컬럼 맵. 컨텍스트가 바뀔 때만 다시 받는다. */
   const [completions, setCompletions] = useState<Record<string, string[]>>({});
+  /** 자동완성 스키마 로드 상태. 비어 있을 때 원인을 알 수 있어야 한다. */
+  const [schemaState, setSchemaState] = useState<"loading" | "ok" | "error">("loading");
   const [historyOpen, setHistoryOpen] = useState(false);
   /** N 접두사 경고 대기 중인 실행. 확인을 받으면 `proceed` 를 부른다. */
   const [nWarn, setNWarn] = useState<{ literals: string[]; proceed: () => void } | null>(
@@ -180,6 +182,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
    */
   useEffect(() => {
     let cancelled = false;
+    setSchemaState("loading");
     api
       .schemaSnapshot(connId, ctx.database ?? null, ctx.schema ?? null)
       .then((rows) => {
@@ -187,12 +190,14 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         const map: Record<string, string[]> = {};
         for (const r of rows) map[r.table] = r.columns;
         setCompletions(map);
+        setSchemaState("ok");
       })
       .catch((e) => {
         // 자동완성은 있으면 좋은 것이라 콘솔 자체는 계속 쓸 수 있어야 한다.
         // 다만 조용히 비어 버리면 왜 안 되는지 알 수 없으므로 로그에는 남긴다.
         if (cancelled) return;
         setCompletions({});
+        setSchemaState("error");
         addLog({
           kind: "error",
           label: "자동완성 스키마 로드 실패",
@@ -210,7 +215,12 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
    */
   const cmExtensions = useMemo(
     () => [
-      sql({ dialect: dialectFor(kind), schema: completions }),
+      sql({
+        dialect: dialectFor(kind),
+        schema: completions,
+        // 스키마를 골랐으면 그 안의 테이블을 접두사 없이도 제안한다.
+        defaultSchema: ctx.schema ?? undefined,
+      }),
       // Tab 으로도 완성을 적용한다(기본 키맵은 Enter 뿐).
       // 팝업이 없을 때는 acceptCompletion 이 false 를 돌려주므로 다른 Tab 동작을 막지 않는다.
       keymap.of([{ key: "Tab", run: acceptCompletion }]),
@@ -221,7 +231,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         spellcheck: "false",
       }),
     ],
-    [kind, completions],
+    [kind, completions, ctx.schema],
   );
 
   async function runAuto() {
@@ -354,6 +364,21 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
               ))}
             </select>
           )}
+          <span
+            className="muted"
+            title={
+              schemaState === "error"
+                ? "스키마를 읽지 못했습니다 — 로그 패널에서 원인을 확인하세요"
+                : "자동완성에 쓰는 테이블 수. Ctrl+Space 로 직접 열 수 있습니다"
+            }
+            style={schemaState === "error" ? { color: "var(--danger)" } : undefined}
+          >
+            {schemaState === "loading"
+              ? "스키마 읽는 중…"
+              : schemaState === "error"
+                ? "스키마 실패"
+                : `테이블 ${Object.keys(completions).length}`}
+          </span>
           <span className="muted">최대 5000행 표시</span>
 
           {historyOpen && (
