@@ -38,12 +38,30 @@ export function referencedTables(sql: string): { table: string; alias?: string }
   return out;
 }
 
+/**
+ * 스키마 후보는 키워드보다 **뒤에 세운다**(`boost` 음수).
+ *
+ * `sel` 처럼 키워드를 치는 중에 이름이 우연히 매칭되면 목록 위를 차지해 방해가 된다.
+ * 이름을 고를 때는 어차피 몇 글자만 쳐도 키워드가 걸러지므로 손해가 없다.
+ */
+const SCHEMA_BOOST = -1;
+
 function tableItems(schema: SchemaMap): Completion[] {
-  return Object.keys(schema).map((t) => ({ label: t, type: "class", detail: "테이블" }));
+  return Object.keys(schema).map((t) => ({
+    label: t,
+    type: "class",
+    detail: "테이블",
+    boost: SCHEMA_BOOST,
+  }));
 }
 
 function columnItems(table: string, cols: string[]): Completion[] {
-  return cols.map((c) => ({ label: c, type: "property", detail: table }));
+  return cols.map((c) => ({
+    label: c,
+    type: "property",
+    detail: table,
+    boost: SCHEMA_BOOST,
+  }));
 }
 
 /**
