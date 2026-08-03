@@ -1460,3 +1460,19 @@ table.grid tbody tr.selected td {
 li[aria-selected] .cm-completionMatchedText {
   color: var(--accent-text);
 }
+
+/* 쿼리 결과 영역 — 툴바 + 표를 세로로 채운다. */
+.result-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.result-pane > .grid-scroll {
+  flex: 1;
+  min-height: 0;
+}
+/* 읽기 전용 표라도 셀을 고를 수 있으니 커서 모양을 바꾼다. */
+.result-pane table.grid td {
+  cursor: cell;
+}
