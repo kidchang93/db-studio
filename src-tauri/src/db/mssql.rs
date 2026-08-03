@@ -1361,6 +1361,43 @@ mod tests {
         );
     }
 
+    /// 자동완성용 스냅샷이 지정한 DB·스키마에서 테이블+컬럼을 가져오는지 확인한다.
+    #[tokio::test]
+    #[ignore]
+    async fn schema_snapshot_reads_catalog() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        for sql in ["IF DB_ID('snap_demo') IS NULL CREATE DATABASE snap_demo"] {
+            d.simple_rows(sql).await.expect("db");
+        }
+        d.simple_rows(
+            "IF OBJECT_ID('snap_demo.dbo.snap_t') IS NOT NULL DROP TABLE snap_demo.dbo.snap_t",
+        )
+        .await
+        .expect("drop");
+        d.simple_rows("CREATE TABLE snap_demo.dbo.snap_t (a INT, b NVARCHAR(10), c INT)")
+            .await
+            .expect("create");
+
+        // 다른 DB 를 지정해도 그 DB 의 카탈로그를 읽어야 한다(3-part 접두사).
+        let snap = d
+            .schema_snapshot(Some("snap_demo"), Some("dbo"))
+            .await
+            .expect("snapshot");
+        println!(
+            "[스냅샷] {:?}",
+            snap.iter().map(|t| &t.table).collect::<Vec<_>>()
+        );
+        let t = snap
+            .iter()
+            .find(|t| t.table == "snap_t")
+            .expect("snap_t 이 없다");
+        assert_eq!(
+            t.columns,
+            vec!["a", "b", "c"],
+            "컬럼 순서가 정의 순이 아니다"
+        );
+    }
+
     /// 외래키 관계를 양방향으로 읽는다(F4 관련 레코드 탐색).
     ///
     /// `columns` 가 **언제나 기준 테이블 쪽**을 가리켜야 한다 — 들어오는 FK 에서 방향이

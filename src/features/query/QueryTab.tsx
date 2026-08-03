@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror, { EditorView, type ReactCodeMirrorRef } from "@uiw/react-codemirror";
+import { acceptCompletion } from "@codemirror/autocomplete";
+import { keymap } from "@codemirror/view";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { AlertTriangle, History, Play, ScrollText, X } from "lucide-react";
@@ -186,9 +188,16 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         for (const r of rows) map[r.table] = r.columns;
         setCompletions(map);
       })
-      .catch(() => {
-        // 자동완성은 있으면 좋은 것이라, 못 받아도 콘솔은 그대로 쓸 수 있어야 한다.
-        if (!cancelled) setCompletions({});
+      .catch((e) => {
+        // 자동완성은 있으면 좋은 것이라 콘솔 자체는 계속 쓸 수 있어야 한다.
+        // 다만 조용히 비어 버리면 왜 안 되는지 알 수 없으므로 로그에는 남긴다.
+        if (cancelled) return;
+        setCompletions({});
+        addLog({
+          kind: "error",
+          label: "자동완성 스키마 로드 실패",
+          detail: errorLine(e),
+        });
       });
     return () => {
       cancelled = true;
@@ -202,6 +211,9 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const cmExtensions = useMemo(
     () => [
       sql({ dialect: dialectFor(kind), schema: completions }),
+      // Tab 으로도 완성을 적용한다(기본 키맵은 Enter 뿐).
+      // 팝업이 없을 때는 acceptCompletion 이 false 를 돌려주므로 다른 Tab 동작을 막지 않는다.
+      keymap.of([{ key: "Tab", run: acceptCompletion }]),
       // 에디터 본문(contenteditable)에도 OS 자동 교정을 끈다.
       EditorView.contentAttributes.of({
         autocapitalize: "none",
