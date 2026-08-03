@@ -62,8 +62,16 @@ impl PostgresDriver {
                 .map(String::as_str)
                 .unwrap_or("DB Studio"),
         );
+        // 풀 크기와 유휴 회수 정책.
+        //
+        // 커넥션 하나가 서버 세션 하나다. 그리드 조회와 콘솔 실행이 겹쳐도 3이면 충분하고,
+        // 그 이상은 서버 세션만 차지한다. 유휴 커넥션은 짧게 끊어 반납한다 — 앱을 켜 둔
+        // 채 손을 놓는 시간이 길어서, 그동안 자리를 붙들고 있을 이유가 없다.
         let pool = PgPoolOptions::new()
-            .max_connections(5)
+            .max_connections(3)
+            .min_connections(0)
+            .idle_timeout(std::time::Duration::from_secs(180))
+            .max_lifetime(std::time::Duration::from_secs(1800))
             .connect_with(opts)
             .await?;
         Ok(Self { pool })

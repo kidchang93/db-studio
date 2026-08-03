@@ -71,6 +71,31 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_menu(build_menu(app.handle())?)?;
 
+            // 시그널로 죽을 때도 연결을 닫는다.
+            //
+            // `RunEvent::Exit` 는 **정상 종료에만** 온다. `tauri dev` 가 재빌드하며
+            // 앱을 죽일 때나 `kill` 로 끝낼 때는 오지 않아, 서버에 세션이 그대로 남는다.
+            // (SIGKILL 은 어떤 코드로도 잡을 수 없어 여기서도 예외다.)
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut int)) = (
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::interrupt()),
+                    ) else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                    handle.state::<AppState>().close_all().await;
+                    std::process::exit(0);
+                });
+            }
+
             Ok(())
         })
         .manage(AppState::new())
