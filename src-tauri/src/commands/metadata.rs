@@ -145,3 +145,19 @@ pub async fn table_relations(
         .relations(&table)
         .await
 }
+
+/// 자동완성용 스키마 스냅샷(테이블 + 컬럼). 카탈로그를 한 번에 훑는다.
+#[tauri::command]
+pub async fn schema_snapshot(
+    state: tauri::State<'_, AppState>,
+    conn_id: String,
+    database: Option<String>,
+    schema: Option<String>,
+) -> Result<Vec<TableColumns>> {
+    state
+        .get(&conn_id)
+        .await?
+        .as_driver()
+        .schema_snapshot(database.as_deref(), schema.as_deref())
+        .await
+}

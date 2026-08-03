@@ -473,6 +473,29 @@ impl Driver for MssqlDriver {
             .collect())
     }
 
+    /// 카탈로그 한 번으로 테이블+컬럼을 모두 가져온다(자동완성용).
+    async fn schema_snapshot(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableColumns>> {
+        let p = db_prefix(database);
+        let sql = format!(
+            "SELECT t.name AS table_name, c.name AS column_name \
+             FROM {p}sys.objects t \
+             JOIN {p}sys.schemas s ON s.schema_id = t.schema_id \
+             JOIN {p}sys.columns c ON c.object_id = t.object_id \
+             WHERE t.type IN ('U','V') AND s.name = @P1 \
+             ORDER BY t.name, c.column_id"
+        );
+        let rows = self
+            .query_rows(&sql, &[Value::String(schema.unwrap_or("dbo").to_string())])
+            .await?;
+        Ok(super::group_columns(rows.iter().map(|r| {
+            (get_str(r, "table_name"), get_str(r, "column_name"))
+        })))
+    }
+
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {
         let schema = schema_or_default(table);
         let p = db_prefix(table.database.as_deref());

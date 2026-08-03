@@ -2,7 +2,7 @@
 
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
-use super::Driver;
+use super::{group_columns, Driver};
 use crate::error::Result;
 use crate::models::*;
 use async_trait::async_trait;
@@ -321,6 +321,28 @@ impl Driver for PostgresDriver {
             }
         }
         Ok(out)
+    }
+
+    /// 카탈로그 한 번으로 테이블+컬럼을 모두 가져온다(자동완성용).
+    async fn schema_snapshot(
+        &self,
+        _database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableColumns>> {
+        let schema = schema.filter(|s| !s.is_empty()).unwrap_or("public");
+        let rows = sqlx::query(
+            "SELECT table_name, column_name FROM information_schema.columns \
+             WHERE table_schema = $1 ORDER BY table_name, ordinal_position",
+        )
+        .bind(schema)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(group_columns(rows.iter().map(|r| {
+            (
+                r.try_get::<String, _>("table_name").unwrap_or_default(),
+                r.try_get::<String, _>("column_name").unwrap_or_default(),
+            )
+        })))
     }
 
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {

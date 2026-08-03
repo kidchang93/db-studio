@@ -248,6 +248,17 @@ pub struct TableRef {
     pub name: String,
 }
 
+/// 자동완성용 스키마 스냅샷 한 줄 — 테이블 하나와 그 컬럼 이름들.
+///
+/// `list_columns` 는 테이블당 왕복이 한 번씩이라 자동완성에는 쓸 수 없다(테이블이
+/// 백 개면 IPC 가 백 번). 카탈로그를 한 번 훑어 통째로 가져오기 위한 타입이다.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableColumns {
+    pub table: String,
+    pub columns: Vec<String>,
+}
+
 /// SQL 콘솔이 실행될 컨텍스트(현재 DB·스키마).
 ///
 /// 지정하지 않으면 연결 시 정해진 기본값을 그대로 쓴다. 어떤 항목을 실제로 바꿀 수

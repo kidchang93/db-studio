@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror, { EditorView, type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -66,6 +66,8 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const [ctx, setCtx] = useState<ExecContext>({ database: null, schema: null });
   const [dbs, setDbs] = useState<string[]>([]);
   const [schemas, setSchemas] = useState<string[]>([]);
+  /** 자동완성용 테이블→컬럼 맵. 컨텍스트가 바뀔 때만 다시 받는다. */
+  const [completions, setCompletions] = useState<Record<string, string[]>>({});
   const [historyOpen, setHistoryOpen] = useState(false);
   /** N 접두사 경고 대기 중인 실행. 확인을 받으면 `proceed` 를 부른다. */
   const [nWarn, setNWarn] = useState<{ literals: string[]; proceed: () => void } | null>(
@@ -167,6 +169,48 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
       cancelled = true;
     };
   }, [connId, ctx.database]);
+
+  /**
+   * 자동완성 스키마를 받아 둔다.
+   *
+   * 테이블마다 `list_columns` 를 부르면 IPC 왕복이 테이블 수만큼 나가 쓸 수 없다.
+   * 카탈로그를 한 번에 훑는 `schema_snapshot` 을 쓰고, 컨텍스트가 바뀔 때만 다시 받는다.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .schemaSnapshot(connId, ctx.database ?? null, ctx.schema ?? null)
+      .then((rows) => {
+        if (cancelled) return;
+        const map: Record<string, string[]> = {};
+        for (const r of rows) map[r.table] = r.columns;
+        setCompletions(map);
+      })
+      .catch(() => {
+        // 자동완성은 있으면 좋은 것이라, 못 받아도 콘솔은 그대로 쓸 수 있어야 한다.
+        if (!cancelled) setCompletions({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connId, ctx.database, ctx.schema]);
+
+  /**
+   * CodeMirror 확장. **매 렌더 새 배열을 주면 에디터가 통째로 재구성되어**
+   * 커서와 실행 취소 이력이 날아가므로 입력값이 바뀔 때만 다시 만든다.
+   */
+  const cmExtensions = useMemo(
+    () => [
+      sql({ dialect: dialectFor(kind), schema: completions }),
+      // 에디터 본문(contenteditable)에도 OS 자동 교정을 끈다.
+      EditorView.contentAttributes.of({
+        autocapitalize: "none",
+        autocorrect: "off",
+        spellcheck: "false",
+      }),
+    ],
+    [kind, completions],
+  );
 
   async function runAuto() {
     if (returnsRows(text)) await run();
@@ -322,15 +366,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
                 theme={oneDark}
                 height="100%"
                 style={{ height: "100%", fontSize: 13 }}
-                extensions={[
-                  sql({ dialect: dialectFor(kind) }),
-                  // 에디터 본문(contenteditable)에도 OS 자동 교정을 끈다.
-                  EditorView.contentAttributes.of({
-                    autocapitalize: "none",
-                    autocorrect: "off",
-                    spellcheck: "false",
-                  }),
-                ]}
+                extensions={cmExtensions}
                 // WHERE 필터 바와 같은 이유로 스마트 인용부호를 ASCII 로 되돌린다.
                 onChange={(v) => setText(normalizeSmartQuotes(v))}
               />

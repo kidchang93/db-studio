@@ -19,6 +19,7 @@ import type {
   SchemaInfo,
   SetPrimaryKeyRequest,
   TableDdl,
+  TableColumns,
   TableInfo,
   TablePage,
   TableRelations,
@@ -154,4 +155,13 @@ export function runExecute(
 /** 관련 레코드 탐색(F4)용 외래키 관계. */
 export function tableRelations(connId: string, table: TableRef): Promise<TableRelations> {
   return invoke("table_relations", { connId, table });
+}
+
+/** 자동완성용 스키마 스냅샷. 카탈로그를 한 번에 훑어 테이블+컬럼을 가져온다. */
+export function schemaSnapshot(
+  connId: string,
+  database?: string | null,
+  schema?: string | null,
+): Promise<TableColumns[]> {
+  return invoke("schema_snapshot", { connId, database: database ?? null, schema: schema ?? null });
 }

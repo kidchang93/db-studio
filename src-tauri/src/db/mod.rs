@@ -39,6 +39,16 @@ pub trait Driver: Send + Sync {
     /// 편집(UPDATE/DELETE)의 행 식별용 PK 컬럼.
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>>;
 
+    /// 자동완성용 스키마 스냅샷(테이블 + 컬럼 이름).
+    ///
+    /// 카탈로그를 **한 번의 쿼리로** 훑어야 한다 — 테이블마다 왕복하면 자동완성에
+    /// 쓸 수 없을 만큼 느려진다. 카탈로그 모양이 DB 마다 달라 각 드라이버가 채운다.
+    async fn schema_snapshot(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableColumns>>;
+
     /// 관련 레코드 탐색(F4)용 외래키 관계.
     ///
     /// 카탈로그 모양이 DB 마다 달라 기본 구현을 두지 않고 각 드라이버가 채운다.
@@ -305,6 +315,22 @@ pub trait Driver: Send + Sync {
             .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
             .ok_or_else(|| AppError::Internal(format!("COUNT 값을 해석할 수 없습니다: {v}")))
     }
+}
+
+/// `(테이블, 컬럼)` 행들을 테이블별로 묶는다. 카탈로그 쿼리가 테이블·컬럼 순으로
+/// 정렬해 주므로 한 번 훑으며 접으면 된다.
+pub fn group_columns(rows: impl Iterator<Item = (String, String)>) -> Vec<TableColumns> {
+    let mut out: Vec<TableColumns> = Vec::new();
+    for (table, column) in rows {
+        match out.last_mut() {
+            Some(last) if last.table == table => last.columns.push(column),
+            _ => out.push(TableColumns {
+                table,
+                columns: vec![column],
+            }),
+        }
+    }
+    out
 }
 
 /// 활성 커넥션. 드라이버별 variant 를 보유하고 정적 디스패치한다.

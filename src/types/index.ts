@@ -214,6 +214,12 @@ export interface ApplyChangesResult {
   statements: string[];
 }
 
+/** 자동완성용 스키마 스냅샷 — 테이블 하나와 그 컬럼 이름들. */
+export interface TableColumns {
+  table: string;
+  columns: string[];
+}
+
 /**
  * SQL 콘솔이 실행될 컨텍스트. 지정하지 않으면 연결 기본값을 쓴다.
  *

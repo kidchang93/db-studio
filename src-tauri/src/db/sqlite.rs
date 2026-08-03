@@ -2,7 +2,7 @@
 
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
-use super::Driver;
+use super::{group_columns, Driver};
 use crate::error::{AppError, Result};
 use crate::models::*;
 use async_trait::async_trait;
@@ -161,6 +161,29 @@ impl Driver for SqliteDriver {
                 }
             })
             .collect())
+    }
+
+    /// SQLite 는 스키마 개념이 없어 전체 테이블을 훑는다.
+    /// `pragma_table_info` 테이블 값 함수로 한 번에 조인한다.
+    async fn schema_snapshot(
+        &self,
+        _database: Option<&str>,
+        _schema: Option<&str>,
+    ) -> Result<Vec<TableColumns>> {
+        let rows = sqlx::query(
+            "SELECT m.name AS table_name, p.name AS column_name \
+             FROM sqlite_master m JOIN pragma_table_info(m.name) p \
+             WHERE m.type IN ('table','view') AND m.name NOT LIKE 'sqlite_%' \
+             ORDER BY m.name, p.cid",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(group_columns(rows.iter().map(|r| {
+            (
+                r.try_get::<String, _>("table_name").unwrap_or_default(),
+                r.try_get::<String, _>("column_name").unwrap_or_default(),
+            )
+        })))
     }
 
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {
@@ -610,6 +633,38 @@ mod tests {
             .unwrap();
         assert_eq!(page.result.rows.len(), 2);
         assert_eq!(page.total_rows, Some(2));
+    }
+
+    /// 자동완성용 스냅샷이 테이블별로 컬럼을 **순서대로** 묶는지 확인한다.
+    /// 한 번의 쿼리로 접어 담기 때문에 정렬이 어긋나면 컬럼이 엉뚱한 테이블에 붙는다.
+    #[tokio::test]
+    async fn schema_snapshot_groups_columns() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for ddl in [
+            "CREATE TABLE a (x INTEGER, y TEXT)",
+            "CREATE TABLE b (p INTEGER, q TEXT, r REAL)",
+            "CREATE VIEW v AS SELECT x FROM a",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+        }
+        let d = SqliteDriver::from_pool(pool);
+        let snap = d.schema_snapshot(None, None).await.unwrap();
+
+        let find = |name: &str| {
+            snap.iter()
+                .find(|t| t.table == name)
+                .unwrap_or_else(|| panic!("{name} 이 없다"))
+                .columns
+                .clone()
+        };
+        assert_eq!(find("a"), vec!["x", "y"]);
+        assert_eq!(find("b"), vec!["p", "q", "r"]);
+        // 뷰도 자동완성 대상이다.
+        assert_eq!(find("v"), vec!["x"]);
     }
 
     /// 외래키 관계를 양방향으로 읽는다.

@@ -92,6 +92,7 @@ pub fn run() {
             commands::metadata::apply_alter_column,
             commands::metadata::table_ddl,
             commands::metadata::table_relations,
+            commands::metadata::schema_snapshot,
             commands::data::fetch_table_page,
             commands::data::apply_changes,
             commands::query::run_query,
