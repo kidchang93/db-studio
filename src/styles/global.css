@@ -1411,3 +1411,52 @@ table.grid tbody tr.selected td {
   font-size: 12px;
   max-width: 180px;
 }
+
+/* ===== 자동완성 팝업 ===== */
+/* CodeMirror 기본 팝업은 에디터 테마와 따로 놀아 눈에 거슬린다. 앱 토큰에 맞춘다. */
+.cm-tooltip.cm-tooltip-autocomplete {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel, var(--bg));
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  overflow: hidden;
+}
+.cm-tooltip-autocomplete > ul {
+  max-height: 260px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+.cm-tooltip-autocomplete > ul > li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  color: var(--text);
+}
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+/* 오른쪽 부가 설명(테이블명 등)은 조용하게. */
+.cm-completionDetail {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 11px;
+  opacity: 0.65;
+}
+/* 타입 아이콘 자리 — 테이블/컬럼을 한눈에 구분한다. */
+.cm-completionIcon {
+  width: 1.1em;
+  opacity: 0.8;
+}
+.cm-completionIcon-class::after { content: "▦"; }
+.cm-completionIcon-property::after { content: "▪"; }
+/* 입력한 글자와 일치하는 부분을 강조해 왜 이 후보가 떴는지 보이게 한다. */
+.cm-completionMatchedText {
+  text-decoration: none;
+  font-weight: 700;
+  color: var(--accent);
+}
+li[aria-selected] .cm-completionMatchedText {
+  color: var(--accent-text);
+}

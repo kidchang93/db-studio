@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror, { EditorView, type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { acceptCompletion } from "@codemirror/autocomplete";
+import { acceptCompletion, autocompletion } from "@codemirror/autocomplete";
 import { keymap } from "@codemirror/view";
+import { Prec } from "@codemirror/state";
+import { sqlCompletionSource, type SchemaMap } from "../../lib/sqlCompletion";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { AlertTriangle, History, Play, ScrollText, X } from "lucide-react";
@@ -72,6 +74,13 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const [completions, setCompletions] = useState<Record<string, string[]>>({});
   /** 자동완성 스키마 로드 상태. 비어 있을 때 원인을 알 수 있어야 한다. */
   const [schemaState, setSchemaState] = useState<"loading" | "ok" | "error">("loading");
+  /**
+   * 완성 소스가 읽을 최신 스키마.
+   *
+   * state 를 확장 의존성에 넣으면 스냅샷이 도착할 때마다 에디터가 통째로 재구성되어
+   * 커서·실행취소 이력이 날아가고 입력이 끊긴다. ref 로 읽어 확장을 고정한다.
+   */
+  const schemaRef = useRef<SchemaMap>({});
   const [historyOpen, setHistoryOpen] = useState(false);
   /** N 접두사 경고 대기 중인 실행. 확인을 받으면 `proceed` 를 부른다. */
   const [nWarn, setNWarn] = useState<{ literals: string[]; proceed: () => void } | null>(
@@ -190,6 +199,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         const map: Record<string, string[]> = {};
         for (const r of rows) map[r.table] = r.columns;
         setCompletions(map);
+        schemaRef.current = map;
         setSchemaState("ok");
       })
       .catch((e) => {
@@ -197,6 +207,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         // 다만 조용히 비어 버리면 왜 안 되는지 알 수 없으므로 로그에는 남긴다.
         if (cancelled) return;
         setCompletions({});
+        schemaRef.current = {};
         setSchemaState("error");
         addLog({
           kind: "error",
@@ -215,15 +226,13 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
    */
   const cmExtensions = useMemo(
     () => [
-      sql({
-        dialect: dialectFor(kind),
-        schema: completions,
-        // 스키마를 골랐으면 그 안의 테이블을 접두사 없이도 제안한다.
-        defaultSchema: ctx.schema ?? undefined,
-      }),
-      // Tab 으로도 완성을 적용한다(기본 키맵은 Enter 뿐).
+      // 키워드 완성은 방언이 제공한다. 스키마 완성은 아래 커스텀 소스가 맡는다.
+      sql({ dialect: dialectFor(kind) }),
+      autocompletion({ override: [sqlCompletionSource(() => schemaRef.current)] }),
+      // Tab 으로도 완성을 적용한다(CodeMirror 기본 키맵은 Enter 뿐).
+      // **Prec.highest 가 필요하다** — 그러지 않으면 basicSetup 쪽 Tab 처리에 먼저 먹힌다.
       // 팝업이 없을 때는 acceptCompletion 이 false 를 돌려주므로 다른 Tab 동작을 막지 않는다.
-      keymap.of([{ key: "Tab", run: acceptCompletion }]),
+      Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
       // 에디터 본문(contenteditable)에도 OS 자동 교정을 끈다.
       EditorView.contentAttributes.of({
         autocapitalize: "none",
@@ -231,7 +240,8 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
         spellcheck: "false",
       }),
     ],
-    [kind, completions, ctx.schema],
+    // 스키마는 ref 로 읽으므로 의존성에 넣지 않는다 — 넣으면 매번 에디터가 재구성된다.
+    [kind],
   );
 
   async function runAuto() {
