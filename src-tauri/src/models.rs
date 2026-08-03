@@ -255,6 +255,12 @@ pub struct TableRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableColumns {
+    /// 이 테이블이 속한 DB. 연결 기본 DB 면 None.
+    #[serde(default)]
+    pub database: Option<String>,
+    /// 스키마. 스키마 개념이 없는 DB(SQLite·MySQL)면 None.
+    #[serde(default)]
+    pub schema: Option<String>,
     pub table: String,
     pub columns: Vec<String>,
 }

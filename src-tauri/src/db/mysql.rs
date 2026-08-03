@@ -315,12 +315,12 @@ impl Driver for MysqlDriver {
     }
 
     /// 카탈로그 한 번으로 테이블+컬럼을 모두 가져온다(자동완성용).
+    /// MySQL 은 데이터베이스가 곧 스키마다.
     async fn schema_snapshot(
         &self,
         database: Option<&str>,
         schema: Option<&str>,
     ) -> Result<Vec<TableColumns>> {
-        // MySQL 은 데이터베이스가 곧 스키마.
         let db = match database.or(schema).filter(|s| !s.is_empty()) {
             Some(s) => s.to_string(),
             None => self.current_database().await?,
@@ -332,12 +332,16 @@ impl Driver for MysqlDriver {
         .bind(&db)
         .fetch_all(&self.pool)
         .await?;
-        Ok(group_columns(rows.iter().map(|r| {
-            (
-                r.try_get::<String, _>("table_name").unwrap_or_default(),
-                r.try_get::<String, _>("column_name").unwrap_or_default(),
-            )
-        })))
+        Ok(group_columns(
+            Some(&db),
+            rows.iter().map(|r| {
+                (
+                    None,
+                    r.try_get::<String, _>("table_name").unwrap_or_default(),
+                    r.try_get::<String, _>("column_name").unwrap_or_default(),
+                )
+            }),
+        ))
     }
 
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {

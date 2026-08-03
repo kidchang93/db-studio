@@ -317,14 +317,19 @@ pub trait Driver: Send + Sync {
     }
 }
 
-/// `(테이블, 컬럼)` 행들을 테이블별로 묶는다. 카탈로그 쿼리가 테이블·컬럼 순으로
-/// 정렬해 주므로 한 번 훑으며 접으면 된다.
-pub fn group_columns(rows: impl Iterator<Item = (String, String)>) -> Vec<TableColumns> {
+/// `(스키마, 테이블, 컬럼)` 행들을 테이블별로 묶는다. 카탈로그 쿼리가 스키마·테이블·
+/// 컬럼 순으로 정렬해 주므로 한 번 훑으며 접으면 된다.
+pub fn group_columns(
+    database: Option<&str>,
+    rows: impl Iterator<Item = (Option<String>, String, String)>,
+) -> Vec<TableColumns> {
     let mut out: Vec<TableColumns> = Vec::new();
-    for (table, column) in rows {
+    for (schema, table, column) in rows {
         match out.last_mut() {
-            Some(last) if last.table == table => last.columns.push(column),
+            Some(last) if last.table == table && last.schema == schema => last.columns.push(column),
             _ => out.push(TableColumns {
+                database: database.map(str::to_string),
+                schema,
                 table,
                 columns: vec![column],
             }),

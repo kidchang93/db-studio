@@ -216,6 +216,10 @@ export interface ApplyChangesResult {
 
 /** 자동완성용 스키마 스냅샷 — 테이블 하나와 그 컬럼 이름들. */
 export interface TableColumns {
+  /** 이 테이블이 속한 DB. 연결 기본 DB 면 null. */
+  database?: string | null;
+  /** 스키마. 스키마 개념이 없는 DB(SQLite·MySQL)면 null. */
+  schema?: string | null;
   table: string;
   columns: string[];
 }

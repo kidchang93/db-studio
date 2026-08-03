@@ -324,25 +324,31 @@ impl Driver for PostgresDriver {
     }
 
     /// 카탈로그 한 번으로 테이블+컬럼을 모두 가져온다(자동완성용).
+    /// 스키마를 지정하지 않으면 **사용자 스키마 전체**를 담는다.
     async fn schema_snapshot(
         &self,
         _database: Option<&str>,
         schema: Option<&str>,
     ) -> Result<Vec<TableColumns>> {
-        let schema = schema.filter(|s| !s.is_empty()).unwrap_or("public");
         let rows = sqlx::query(
-            "SELECT table_name, column_name FROM information_schema.columns \
-             WHERE table_schema = $1 ORDER BY table_name, ordinal_position",
+            "SELECT table_schema, table_name, column_name FROM information_schema.columns \
+             WHERE ($1::text IS NULL OR table_schema = $1) \
+               AND table_schema NOT IN ('pg_catalog','information_schema') \
+             ORDER BY table_schema, table_name, ordinal_position",
         )
-        .bind(schema)
+        .bind(schema.filter(|s| !s.is_empty()))
         .fetch_all(&self.pool)
         .await?;
-        Ok(group_columns(rows.iter().map(|r| {
-            (
-                r.try_get::<String, _>("table_name").unwrap_or_default(),
-                r.try_get::<String, _>("column_name").unwrap_or_default(),
-            )
-        })))
+        Ok(group_columns(
+            None,
+            rows.iter().map(|r| {
+                (
+                    r.try_get::<String, _>("table_schema").ok(),
+                    r.try_get::<String, _>("table_name").unwrap_or_default(),
+                    r.try_get::<String, _>("column_name").unwrap_or_default(),
+                )
+            }),
+        ))
     }
 
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {

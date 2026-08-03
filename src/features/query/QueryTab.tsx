@@ -3,7 +3,7 @@ import CodeMirror, { EditorView, type ReactCodeMirrorRef } from "@uiw/react-code
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { keymap } from "@codemirror/view";
 import { Prec } from "@codemirror/state";
-import { sqlCompletionSource, type SchemaMap } from "../../lib/sqlCompletion";
+import { sqlCompletionSource, type SchemaEntry } from "../../lib/sqlCompletion";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { AlertTriangle, History, Play, ScrollText, X } from "lucide-react";
@@ -71,7 +71,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const [dbs, setDbs] = useState<string[]>([]);
   const [schemas, setSchemas] = useState<string[]>([]);
   /** 자동완성용 테이블→컬럼 맵. 컨텍스트가 바뀔 때만 다시 받는다. */
-  const [completions, setCompletions] = useState<Record<string, string[]>>({});
+  const [completions, setCompletions] = useState<SchemaEntry[]>([]);
   /** 자동완성 스키마 로드 상태. 비어 있을 때 원인을 알 수 있어야 한다. */
   const [schemaState, setSchemaState] = useState<"loading" | "ok" | "error">("loading");
   /**
@@ -80,7 +80,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
    * state 를 확장 의존성에 넣으면 스냅샷이 도착할 때마다 에디터가 통째로 재구성되어
    * 커서·실행취소 이력이 날아가고 입력이 끊긴다. ref 로 읽어 확장을 고정한다.
    */
-  const schemaRef = useRef<SchemaMap>({});
+  const schemaRef = useRef<SchemaEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   /** N 접두사 경고 대기 중인 실행. 확인을 받으면 `proceed` 를 부른다. */
   const [nWarn, setNWarn] = useState<{ literals: string[]; proceed: () => void } | null>(
@@ -193,21 +193,20 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     let cancelled = false;
     setSchemaState("loading");
     api
-      .schemaSnapshot(connId, ctx.database ?? null, ctx.schema ?? null)
+      // 스키마를 지정하지 않고 받는다 — `db.schema.table` 로 쓰려면 스키마별로 다 알아야 한다.
+      .schemaSnapshot(connId, ctx.database ?? null, null)
       .then((rows) => {
         if (cancelled) return;
-        const map: Record<string, string[]> = {};
-        for (const r of rows) map[r.table] = r.columns;
-        setCompletions(map);
-        schemaRef.current = map;
+        setCompletions(rows);
+        schemaRef.current = rows;
         setSchemaState("ok");
       })
       .catch((e) => {
         // 자동완성은 있으면 좋은 것이라 콘솔 자체는 계속 쓸 수 있어야 한다.
         // 다만 조용히 비어 버리면 왜 안 되는지 알 수 없으므로 로그에는 남긴다.
         if (cancelled) return;
-        setCompletions({});
-        schemaRef.current = {};
+        setCompletions([]);
+        schemaRef.current = [];
         setSchemaState("error");
         addLog({
           kind: "error",
@@ -218,7 +217,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [connId, ctx.database, ctx.schema]);
+  }, [connId, ctx.database]);
 
   /**
    * CodeMirror 확장. **매 렌더 새 배열을 주면 에디터가 통째로 재구성되어**
@@ -391,7 +390,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
               ? "스키마 읽는 중…"
               : schemaState === "error"
                 ? "스키마 실패"
-                : `테이블 ${Object.keys(completions).length}`}
+                : `테이블 ${completions.length}`}
           </span>
           <span className="muted">최대 5000행 표시</span>
 

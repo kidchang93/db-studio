@@ -178,12 +178,16 @@ impl Driver for SqliteDriver {
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(group_columns(rows.iter().map(|r| {
-            (
-                r.try_get::<String, _>("table_name").unwrap_or_default(),
-                r.try_get::<String, _>("column_name").unwrap_or_default(),
-            )
-        })))
+        Ok(group_columns(
+            None,
+            rows.iter().map(|r| {
+                (
+                    None,
+                    r.try_get::<String, _>("table_name").unwrap_or_default(),
+                    r.try_get::<String, _>("column_name").unwrap_or_default(),
+                )
+            }),
+        ))
     }
 
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {

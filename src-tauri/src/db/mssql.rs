@@ -474,6 +474,9 @@ impl Driver for MssqlDriver {
     }
 
     /// 카탈로그 한 번으로 테이블+컬럼을 모두 가져온다(자동완성용).
+    ///
+    /// 스키마를 지정하지 않으면 **그 DB 의 모든 스키마**를 담는다 —
+    /// 콘솔에서 `db.schema.table` 로 쓰려면 스키마별로 다 알고 있어야 한다.
     async fn schema_snapshot(
         &self,
         database: Option<&str>,
@@ -481,19 +484,28 @@ impl Driver for MssqlDriver {
     ) -> Result<Vec<TableColumns>> {
         let p = db_prefix(database);
         let sql = format!(
-            "SELECT t.name AS table_name, c.name AS column_name \
+            "SELECT s.name AS schema_name, t.name AS table_name, c.name AS column_name \
              FROM {p}sys.objects t \
              JOIN {p}sys.schemas s ON s.schema_id = t.schema_id \
              JOIN {p}sys.columns c ON c.object_id = t.object_id \
-             WHERE t.type IN ('U','V') AND s.name = @P1 \
-             ORDER BY t.name, c.column_id"
+             WHERE t.type IN ('U','V') AND (@P1 IS NULL OR s.name = @P1) \
+             ORDER BY s.name, t.name, c.column_id"
         );
-        let rows = self
-            .query_rows(&sql, &[Value::String(schema.unwrap_or("dbo").to_string())])
-            .await?;
-        Ok(super::group_columns(rows.iter().map(|r| {
-            (get_str(r, "table_name"), get_str(r, "column_name"))
-        })))
+        let arg = match schema.filter(|s| !s.is_empty()) {
+            Some(s) => Value::String(s.to_string()),
+            None => Value::Null,
+        };
+        let rows = self.query_rows(&sql, &[arg]).await?;
+        Ok(super::group_columns(
+            database,
+            rows.iter().map(|r| {
+                (
+                    Some(get_str(r, "schema_name")),
+                    get_str(r, "table_name"),
+                    get_str(r, "column_name"),
+                )
+            }),
+        ))
     }
 
     async fn primary_keys(&self, table: &TableRef) -> Result<Vec<String>> {
