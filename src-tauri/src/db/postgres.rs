@@ -1,5 +1,6 @@
 //! PostgreSQL 드라이버 (sqlx).
 
+use super::script;
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
 use super::{group_columns, Driver};
@@ -489,11 +490,18 @@ impl Driver for PostgresDriver {
     async fn run_script(
         &self,
         sql: &str,
-        max_rows: usize,
+        opts: &ScriptOptions,
         ctx: &ExecContext,
     ) -> Result<ScriptResult> {
         use futures_util::StreamExt;
         let start = Instant::now();
+        // 쓰기 문장에 `RETURNING *` 을 끼워 넣어 변경된 행을 돌려받는다.
+        // UPDATE 는 **변경 후 값만** 온다 — 표준에 변경 전을 주는 방법이 없다.
+        let rewritten = opts
+            .capture_changes
+            .then(|| script::with_change_output(sql, script::ChangeOutput::Returning))
+            .flatten();
+        let sql = rewritten.as_ref().map(|r| r.sql.as_str()).unwrap_or(sql);
         let mut conn = self.pool.acquire().await?;
         self.apply_ctx(&mut conn, ctx).await?;
 
@@ -514,7 +522,7 @@ impl Driver for PostgresDriver {
                         }
                     }
                     sqlx::Either::Right(row) => {
-                        if cur.len() >= max_rows {
+                        if cur.len() >= opts.max_rows {
                             truncated = true;
                         } else {
                             cur.push(row);
@@ -526,6 +534,9 @@ impl Driver for PostgresDriver {
         // 완료 신호 없이 끝나는 드라이버를 대비해 남은 행도 접는다.
         if !cur.is_empty() {
             out.results.push(rows_to_result(&cur, 0, truncated));
+        }
+        if rewritten.is_some() {
+            out.sql.push(sql.to_string());
         }
         out.elapsed_ms = start.elapsed().as_millis() as u64;
         Ok(out)

@@ -828,10 +828,14 @@ impl Driver for MssqlDriver {
     /// 결과셋과 영향 행 수를 **함께 주는 API 가 없다**(전자는 결과셋만, 후자는 행 수만).
     /// 판단은 `script::may_return_rows` 가 하며 결과셋 쪽으로 치우쳐 있다 — 잘못 골라도
     /// 영향 행 수를 못 보는 데 그치고, 사용자가 보려던 결과가 사라지지는 않는다.
+    ///
+    /// `opts.capture_changes` 를 켜면 쓰기 배치에 `OUTPUT deleted.*, inserted.*` 를 끼워
+    /// 넣어 **변경 전후 행**을 그대로 받는다. 이때는 결과셋이 곧 변경 내역이므로 조회
+    /// 경로로 보내고, 행 수를 그대로 영향 행 수로 센다.
     async fn run_script(
         &self,
         sql: &str,
-        max_rows: usize,
+        opts: &ScriptOptions,
         ctx: &ExecContext,
     ) -> Result<ScriptResult> {
         let start = Instant::now();
@@ -842,7 +846,15 @@ impl Driver for MssqlDriver {
         let mut guard = self.client.lock().await;
 
         for batch in batches {
-            if script::may_return_rows(batch) {
+            // 변경 행 보기가 켜져 있으면 쓰기 배치에 `OUTPUT` 을 끼워 넣는다.
+            // 손댄 배치는 결과셋이 곧 변경 내역이라, 그 행 수가 영향 행 수와 같다.
+            let rewritten = opts
+                .capture_changes
+                .then(|| script::with_change_output(batch, script::ChangeOutput::Output))
+                .flatten();
+            let batch = rewritten.as_ref().map(|r| r.sql.as_str()).unwrap_or(batch);
+
+            if rewritten.is_some() || script::may_return_rows(batch) {
                 let sets = match guard.simple_query(batch).await {
                     Ok(s) => Some(s.into_results().await?),
                     Err(e) if is_connection_lost(&e) => None,
@@ -853,7 +865,8 @@ impl Driver for MssqlDriver {
                     None => {
                         // 첫 배치에서만 되살린다 — 이미 앞 배치를 반영했다면 어디까지
                         // 나갔는지 알 수 없으므로 다시 보내면 중복 적용 위험이 있다.
-                        if !out.results.is_empty() || out.rows_affected > 0 {
+                        // 고쳐 보낸 배치는 쓰기이므로 아예 재시도하지 않는다.
+                        if rewritten.is_some() || !out.results.is_empty() || out.rows_affected > 0 {
                             return Err(AppError::Connection(
                                 "스크립트 도중 연결이 끊어졌습니다. 어디까지 반영됐는지 확인한 뒤 재시도하세요"
                                     .into(),
@@ -863,14 +876,25 @@ impl Driver for MssqlDriver {
                         guard.simple_query(batch).await?.into_results().await?
                     }
                 };
-                for rows in sets {
-                    let truncated = rows.len() > max_rows;
+                if let Some(rw) = &rewritten {
+                    out.sql.push(rw.sql.clone());
+                }
+                for (i, rows) in sets.into_iter().enumerate() {
+                    let truncated = rows.len() > opts.max_rows;
                     let slice = if truncated {
-                        &rows[..max_rows]
+                        &rows[..opts.max_rows]
                     } else {
                         &rows[..]
                     };
-                    out.results.push(rows_to_result(slice, 0, truncated));
+                    let mut result = rows_to_result(slice, 0, truncated);
+                    if let Some(rw) = &rewritten {
+                        // 배치 전체가 쓰기일 때만 고쳐 보내므로 결과셋과 문장이 1:1 이다.
+                        out.rows_affected += rows.len() as u64;
+                        if rw.before_after.get(i).copied().unwrap_or(false) {
+                            script::label_before_after(&mut result.columns);
+                        }
+                    }
+                    out.results.push(result);
                 }
             } else {
                 let empty: Vec<&dyn ToSql> = Vec::new();
@@ -927,6 +951,14 @@ impl Driver for MssqlDriver {
 /// `DBSTUDIO_MSSQL_TEST=1 cargo test --lib mssql -- --ignored --nocapture` 로 실행한다.
 #[cfg(test)]
 mod tests {
+
+    /// 행 수 제한만 지정한 스크립트 옵션(변경 행 보기는 끔).
+    fn opts(max_rows: usize) -> ScriptOptions {
+        ScriptOptions {
+            max_rows,
+            capture_changes: false,
+        }
+    }
     use super::*;
     use std::collections::BTreeMap;
 
@@ -1553,7 +1585,7 @@ mod tests {
                       SELECT a FROM dbo.ms_test ORDER BY a; \
                       SELECT COUNT(*) AS n FROM dbo.ms_test;";
         let r = d
-            .run_script(script, 100, &ExecContext::default())
+            .run_script(script, &opts(100), &ExecContext::default())
             .await
             .expect("script");
         println!(
@@ -1586,7 +1618,7 @@ mod tests {
                       SELECT a FROM dbo.go_test ORDER BY a\n\
                       GO\n";
         let r = d
-            .run_script(script, 100, &ExecContext::default())
+            .run_script(script, &opts(100), &ExecContext::default())
             .await
             .expect("script");
         println!(
@@ -1597,6 +1629,74 @@ mod tests {
         assert_eq!(r.results.len(), 1, "SELECT 배치 결과가 오지 않았다");
         assert_eq!(r.results[0].rows.len(), 2);
         assert_eq!(r.rows_affected, 2, "INSERT 두 건의 영향 행 수를 놓쳤다");
+    }
+
+    /// 변경 행 보기: UPDATE 가 **변경 전후 값**을 그대로 돌려주는지 확인한다.
+    ///
+    /// 영향 행 수만으로는 "무엇이 어떻게 바뀌었는지"를 알 수 없다. `OUTPUT` 을 끼워
+    /// 넣어 받은 행이 실제 값과 맞는지, 컬럼이 이전/이후로 갈라지는지 본다.
+    #[tokio::test]
+    #[ignore]
+    async fn capture_changes_returns_before_and_after_values() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.chg_test') IS NOT NULL DROP TABLE dbo.chg_test")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.chg_test (id INT, name NVARCHAR(20))")
+            .await
+            .expect("create");
+        d.simple_rows("INSERT INTO dbo.chg_test VALUES (1, N'하나'), (2, N'둘')")
+            .await
+            .expect("seed");
+
+        let capture = ScriptOptions {
+            max_rows: 100,
+            capture_changes: true,
+        };
+        let r = d
+            .run_script(
+                "UPDATE dbo.chg_test SET name = N'바뀜' WHERE id = 1",
+                &capture,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("script");
+
+        let res = &r.results[0];
+        let names: Vec<_> = res.columns.iter().map(|c| c.name.as_str()).collect();
+        println!("[변경] 컬럼 {names:?} 행 {:?}", res.rows);
+        assert_eq!(names, vec!["이전.id", "이전.name", "이후.id", "이후.name"]);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0][1], serde_json::json!("하나"), "변경 전 값");
+        assert_eq!(res.rows[0][3], serde_json::json!("바뀜"), "변경 후 값");
+        assert_eq!(r.rows_affected, 1, "변경 행 수는 결과셋 행 수와 같다");
+        assert_eq!(r.sql.len(), 1, "고쳐 보낸 SQL 이 실려 오지 않았다");
+        assert!(
+            r.sql[0].contains("OUTPUT deleted.*, inserted.*"),
+            "{}",
+            r.sql[0]
+        );
+
+        // DELETE 는 변경 전만, INSERT 는 변경 후만 온다.
+        let r = d
+            .run_script(
+                "DELETE FROM dbo.chg_test WHERE id = 2",
+                &capture,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("delete");
+        let names: Vec<_> = r.results[0]
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["id", "name"],
+            "쌍이 아니면 이름을 바꾸지 않는다"
+        );
+        assert_eq!(r.results[0].rows[0][1], serde_json::json!("둘"));
     }
 
     /// keepalive 가 실제로 세션을 살려 두는지 확인한다.

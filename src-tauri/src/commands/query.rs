@@ -4,8 +4,6 @@ use crate::error::Result;
 use crate::models::*;
 use crate::state::AppState;
 
-const DEFAULT_MAX_ROWS: usize = 1000;
-
 /// SQL 콘솔 실행. 문장이 몇 개든 결과셋을 **전부** 담아 돌려준다.
 ///
 /// 조회/실행을 나누지 않는다 — 나누면 다중 문장에서 첫 결과셋만 남고
@@ -15,18 +13,14 @@ pub async fn run_script(
     state: tauri::State<'_, AppState>,
     conn_id: String,
     sql: String,
-    max_rows: Option<usize>,
+    opts: Option<ScriptOptions>,
     ctx: Option<ExecContext>,
 ) -> Result<ScriptResult> {
     state
         .get(&conn_id)
         .await?
         .as_driver()
-        .run_script(
-            &sql,
-            max_rows.unwrap_or(DEFAULT_MAX_ROWS),
-            &ctx.unwrap_or_default(),
-        )
+        .run_script(&sql, &opts.unwrap_or_default(), &ctx.unwrap_or_default())
         .await
 }
 

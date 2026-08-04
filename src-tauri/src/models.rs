@@ -253,6 +253,29 @@ pub struct TableRef {
 /// 콘솔에 여러 문장을 넣으면 서버는 전부 실행하지만, 결과셋은 문장마다 따로 나온다.
 /// **첫 결과셋만 읽고 나머지를 버리면 "일부가 실행되지 않은 것처럼" 보인다** — 실제로는
 /// 실행됐는데 화면에 도달하지 못한 것이다. 그래서 결과셋을 전부 담아 올린다.
+/// 스크립트 실행 옵션.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptOptions {
+    /// 결과셋 **하나당** 최대 행 수. 전체 합으로 자르면 앞 결과셋이 한도를 다 먹는다.
+    pub max_rows: usize,
+    /// 쓰기 문장에 `OUTPUT`/`RETURNING` 을 끼워 넣어 **변경된 행을 돌려받을지**.
+    ///
+    /// 사용자 SQL 을 고쳐 보내는 일이라 기본은 꺼 둔다. 켜면 실제로 나간 SQL 이
+    /// `ScriptResult::sql` 에 실려 와 무엇이 실행됐는지 확인할 수 있다.
+    #[serde(default)]
+    pub capture_changes: bool,
+}
+
+impl Default for ScriptOptions {
+    fn default() -> Self {
+        Self {
+            max_rows: 1000,
+            capture_changes: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptResult {
@@ -263,6 +286,11 @@ pub struct ScriptResult {
     pub rows_affected: u64,
     #[serde(default)]
     pub elapsed_ms: u64,
+    /// 실제로 서버에 나간 SQL. **원문과 다를 때만** 채운다(`OUTPUT`/`RETURNING` 삽입).
+    ///
+    /// 우리가 사용자 SQL 을 고쳐 보냈다면 무엇이 실행됐는지 확인할 수 있어야 한다.
+    #[serde(default)]
+    pub sql: Vec<String>,
 }
 
 /// 자동완성용 스키마 스냅샷 한 줄 — 테이블 하나와 그 컬럼 이름들.

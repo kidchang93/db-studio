@@ -3,6 +3,7 @@
 //! MySQL 은 "스키마 == 데이터베이스" 이므로 `list_schemas` 는 비우고,
 //! 테이블은 연결된(또는 지정된) 데이터베이스 아래에서 조회한다.
 
+use super::script;
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
 use super::{group_columns, Driver};
@@ -491,11 +492,17 @@ impl Driver for MysqlDriver {
     async fn run_script(
         &self,
         sql: &str,
-        max_rows: usize,
+        opts: &ScriptOptions,
         ctx: &ExecContext,
     ) -> Result<ScriptResult> {
         use futures_util::StreamExt;
         let start = Instant::now();
+        // MySQL 에는 변경 행을 돌려주는 절이 없다. 옵션이 켜져 있어도 원문 그대로 보낸다.
+        let rewritten = opts
+            .capture_changes
+            .then(|| script::with_change_output(sql, script::ChangeOutput::Unsupported))
+            .flatten();
+        let sql = rewritten.as_ref().map(|r| r.sql.as_str()).unwrap_or(sql);
         let mut conn = self.pool.acquire().await?;
         self.apply_ctx(&mut conn, ctx).await?;
 
@@ -516,7 +523,7 @@ impl Driver for MysqlDriver {
                         }
                     }
                     sqlx::Either::Right(row) => {
-                        if cur.len() >= max_rows {
+                        if cur.len() >= opts.max_rows {
                             truncated = true;
                         } else {
                             cur.push(row);
@@ -528,6 +535,9 @@ impl Driver for MysqlDriver {
         // 완료 신호 없이 끝나는 드라이버를 대비해 남은 행도 접는다.
         if !cur.is_empty() {
             out.results.push(rows_to_result(&cur, 0, truncated));
+        }
+        if rewritten.is_some() {
+            out.sql.push(sql.to_string());
         }
         out.elapsed_ms = start.elapsed().as_millis() as u64;
         Ok(out)

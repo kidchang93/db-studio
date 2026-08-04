@@ -6,7 +6,7 @@ import { Prec } from "@codemirror/state";
 import { sqlCompletionSource, type SchemaEntry } from "../../lib/sqlCompletion";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { AlertTriangle, History, Play, X } from "lucide-react";
+import { AlertTriangle, FileDiff, History, Play, X } from "lucide-react";
 import {
   Group as PanelGroup,
   Panel,
@@ -58,6 +58,13 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const [activeResult, setActiveResult] = useState(0);
   /** 결과셋을 내지 않은 문장들의 영향 행 수 합계. */
   const [affected, setAffected] = useState<number | null>(null);
+  /**
+   * 쓰기 문장이 **어떤 행을 어떻게 바꿨는지** 돌려받을지.
+   *
+   * 켜면 백엔드가 `OUTPUT`/`RETURNING` 을 끼워 넣어 변경 전후 행을 결과 탭으로 보여 준다.
+   * 사용자 SQL 을 고쳐 보내는 일이라 기본은 꺼 둔다 — 실제로 나간 SQL 은 로그에 남는다.
+   */
+  const [captureChanges, setCaptureChanges] = useState(false);
   const [running, setRunning] = useState(false);
   /** 마지막 실행이 남긴 오류. 위치를 찾았으면 spot 이 붙는다. */
   const [sqlError, setSqlError] = useState<{ message: string; spot: SqlErrorSpot | null } | null>(
@@ -143,7 +150,12 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
    * 틀린 자리를 짚느니 안 짚는 편이 낫다.
    */
   function reportSqlError(e: unknown, title: string) {
-    const message = errorLine(e);
+    let message = errorLine(e);
+    // 변경 행 보기가 켜져 있으면 우리가 SQL 에 절을 끼워 넣은 상태다. 그걸 모르면
+    // 멀쩡한 문장이 왜 깨졌는지 알 수 없다(트리거가 걸린 테이블 등).
+    if (captureChanges) {
+      message += "\n(변경 행 보기가 켜져 있어 OUTPUT/RETURNING 절이 추가된 상태입니다. 끄고 다시 실행해 보세요.)";
+    }
     const spot = findErrorSpot(text, message);
     setSqlError({ message, spot });
     if (spot) {
@@ -261,7 +273,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     setRunning(true);
     setSqlError(null);
     try {
-      const r = await api.runScript(connId, text, 5000, ctx);
+      const r = await api.runScript(connId, text, { maxRows: 5000, captureChanges }, ctx);
       setResults(r.results);
       setActiveResult(0);
       setAffected(r.rowsAffected);
@@ -291,7 +303,9 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
       addLog({
         kind: r.results.length === 0 ? "exec" : "query",
         label: r.results.length > 1 ? "스크립트 실행" : "쿼리 실행",
-        sql: text,
+        // 우리가 고쳐 보냈으면 **실제로 나간 SQL** 을 남긴다. 원문만 남기면
+        // 무엇이 실행됐는지 확인할 방법이 없다.
+        sql: r.sql.length > 0 ? r.sql.join("\n") : text,
         detail: summary,
         elapsedMs: r.elapsedMs,
       });
@@ -322,6 +336,19 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
             title="Ctrl/Cmd+Enter — 여러 문장을 넣으면 전부 실행하고 결과를 탭으로 보여 줍니다"
           >
             <Play size={13} /> 실행
+          </button>
+          <button
+            className={`btn sm${captureChanges ? " on" : ""}`}
+            onClick={() => setCaptureChanges((v) => !v)}
+            title={
+              kind === "mysql"
+                ? "MySQL 은 변경된 행을 돌려주는 문법이 없어 지원하지 않습니다"
+                : "INSERT/UPDATE/DELETE 가 바꾼 행을 결과로 돌려받습니다. " +
+                  "실행 전에 OUTPUT/RETURNING 절이 추가되며, 실제로 나간 SQL 은 로그에 남습니다"
+            }
+            disabled={kind === "mysql"}
+          >
+            <FileDiff size={13} /> 변경 행 보기
           </button>
           <button
             className={`btn sm${historyOpen ? " on" : ""}`}

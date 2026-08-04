@@ -38,7 +38,7 @@ import type {
   TableRef,
 } from "../../types";
 import { useUiStore } from "../../store/uiStore";
-import { useLogStore } from "../../store/logStore";
+import { useLogStore, type LogChange } from "../../store/logStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { Modal } from "../../components/Modal";
 import { StructureView } from "./StructureView";
@@ -508,18 +508,48 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
     setEditing(null);
   }
 
+  /** 행 식별 값을 `id=3` 처럼 한 줄로. 로그에서 어느 행인지 알아보기 위한 표기다. */
+  function keyLabel(pk: Record<string, Cell>): string {
+    return Object.entries(pk)
+      .map(([k, v]) => `${k}=${v === null ? "NULL" : v}`)
+      .join(", ");
+  }
+
   async function commit() {
     const editsList: RowEdit[] = [];
+    // 무엇이 어떻게 바뀌는지 — 커밋 뒤 로그에 남긴다. 커밋에 성공하면 화면이
+    // 새 값으로 덮여, 지금 모아 두지 않으면 이전 값을 다시 볼 방법이 없다.
+    const changes: LogChange[] = [];
 
     // UPDATE
-    for (const [idxStr, changes] of Object.entries(edits)) {
+    for (const [idxStr, rowChanges] of Object.entries(edits)) {
       const rowIdx = Number(idxStr);
       if (deleted.has(rowIdx)) continue; // 삭제될 행은 갱신 생략
-      editsList.push({ type: "update", pk: rowKey(rowIdx), changes });
+      const pk = rowKey(rowIdx);
+      editsList.push({ type: "update", pk, changes: rowChanges });
+      changes.push({
+        op: "update",
+        key: keyLabel(pk),
+        fields: Object.entries(rowChanges).map(([column, after]) => ({
+          column,
+          before: rows[rowIdx][colIndex[column]],
+          after,
+        })),
+      });
     }
     // DELETE
     for (const rowIdx of deleted) {
-      editsList.push({ type: "delete", pk: rowKey(rowIdx) });
+      const pk = rowKey(rowIdx);
+      editsList.push({ type: "delete", pk });
+      changes.push({
+        op: "delete",
+        key: keyLabel(pk),
+        // 삭제는 사라지는 행 전체를 남긴다 — 되살리려면 모든 컬럼이 필요하다.
+        fields: allColumns.map((c) => ({
+          column: c.name,
+          before: rows[rowIdx][colIndex[c.name]],
+        })),
+      });
     }
     // INSERT — null 뿐인 컬럼은 제외해 DB 기본값이 적용되게 한다.
     for (const ins of inserts) {
@@ -527,7 +557,13 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
       for (const [k, v] of Object.entries(ins.values)) {
         if (v !== null) values[k] = v;
       }
-      if (Object.keys(values).length > 0) editsList.push({ type: "insert", values });
+      if (Object.keys(values).length === 0) continue;
+      editsList.push({ type: "insert", values });
+      changes.push({
+        op: "insert",
+        key: "새 행",
+        fields: Object.entries(values).map(([column, after]) => ({ column, after })),
+      });
     }
 
     if (editsList.length === 0) return;
@@ -540,11 +576,13 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
         message: `추가 ${res.inserted} · 수정 ${res.updated} · 삭제 ${res.deleted}`,
       });
       // 커밋은 백엔드가 문장을 만들기 때문에, 응답에 실려 온 SQL 을 그대로 남긴다.
+      // 값은 SQL 이 아니라 `changes` 로 따로 싣는다 — 문형에는 값을 넣지 않는다.
       useLogStore.getState().add({
         kind: "commit",
         label: `커밋 — ${table.name}`,
         sql: res.statements.join("\n"),
         detail: `추가 ${res.inserted} · 수정 ${res.updated} · 삭제 ${res.deleted}`,
+        changes,
       });
       await load();
     } catch (e) {

@@ -1,6 +1,22 @@
 import { create } from "zustand";
+import type { Cell } from "../types";
 
 export type LogKind = "query" | "exec" | "commit" | "error";
+
+/** 컬럼 하나가 어떻게 바뀌었는지. 추가는 before, 삭제는 after 가 없다. */
+export interface LogField {
+  column: string;
+  before?: Cell;
+  after?: Cell;
+}
+
+/** 쓰기 한 건이 실제로 무엇을 바꿨는지. */
+export interface LogChange {
+  op: "insert" | "update" | "delete";
+  /** 어떤 행인지 — `id=3` 처럼 식별 컬럼만 추린 표기. */
+  key: string;
+  fields: LogField[];
+}
 
 export interface LogEntry {
   id: string;
@@ -14,6 +30,14 @@ export interface LogEntry {
   /** 결과 요약 또는 오류 메시지. */
   detail?: string;
   elapsedMs?: number;
+  /**
+   * 행 단위 변경 내역. **값이 담긴다.**
+   *
+   * 무엇이 바뀌었는지 확인하려면 값이 없으면 소용이 없다. 대신 이 로그는
+   * 메모리에만 있고(디스크 기록·외부 전송 없음) SQL 문형에는 여전히 값을
+   * 이어붙이지 않는다(`docs/DESIGN.md` §6-4).
+   */
+  changes?: LogChange[];
 }
 
 /**
@@ -23,8 +47,9 @@ export interface LogEntry {
  * 되짚을 방법이 없었다. 특히 그리드 커밋은 백엔드가 문장을 만들기 때문에
  * 사용자가 무엇이 실행됐는지 알 길이 아예 없었다.
  *
- * **값은 담지 않는다** — 백엔드가 문형만 내려보낸다(`ApplyChangesResult::statements`).
- * 로그에 개인정보나 자격증명이 새지 않아야 한다(`docs/DESIGN.md` §9).
+ * **SQL 문형에는 값을 담지 않는다** — 백엔드가 문형만 내려보낸다
+ * (`ApplyChangesResult::statements`). 값은 `changes` 에 따로 실어 표시만 한다.
+ * 어느 쪽이든 메모리에만 남고 디스크·외부로 나가지 않는다(`docs/DESIGN.md` §6-4·§9).
  */
 interface LogState {
   entries: LogEntry[];

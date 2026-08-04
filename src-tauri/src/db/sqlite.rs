@@ -1,5 +1,6 @@
 //! SQLite 드라이버 (sqlx). 서버 불필요 — 파일/인메모리.
 
+use super::script;
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
 use super::{group_columns, Driver};
@@ -425,11 +426,18 @@ impl Driver for SqliteDriver {
     async fn run_script(
         &self,
         sql: &str,
-        max_rows: usize,
+        opts: &ScriptOptions,
         ctx: &ExecContext,
     ) -> Result<ScriptResult> {
         use futures_util::StreamExt;
         let start = Instant::now();
+        // 쓰기 문장에 `RETURNING *` 을 끼워 넣어 변경된 행을 돌려받는다.
+        // UPDATE 는 **변경 후 값만** 온다 — 표준에 변경 전을 주는 방법이 없다.
+        let rewritten = opts
+            .capture_changes
+            .then(|| script::with_change_output(sql, script::ChangeOutput::Returning))
+            .flatten();
+        let sql = rewritten.as_ref().map(|r| r.sql.as_str()).unwrap_or(sql);
         // SQLite 는 DB·스키마 개념이 없어 컨텍스트를 적용할 것이 없다.
         let _ = ctx;
         let mut conn = self.pool.acquire().await?;
@@ -451,7 +459,7 @@ impl Driver for SqliteDriver {
                         }
                     }
                     sqlx::Either::Right(row) => {
-                        if cur.len() >= max_rows {
+                        if cur.len() >= opts.max_rows {
                             truncated = true;
                         } else {
                             cur.push(row);
@@ -463,6 +471,9 @@ impl Driver for SqliteDriver {
         // 완료 신호 없이 끝나는 드라이버를 대비해 남은 행도 접는다.
         if !cur.is_empty() {
             out.results.push(rows_to_result(&cur, 0, truncated));
+        }
+        if rewritten.is_some() {
+            out.sql.push(sql.to_string());
         }
         out.elapsed_ms = start.elapsed().as_millis() as u64;
         Ok(out)
@@ -486,6 +497,14 @@ impl Driver for SqliteDriver {
 
 #[cfg(test)]
 mod tests {
+
+    /// 행 수 제한만 지정한 스크립트 옵션(변경 행 보기는 끔).
+    fn opts(max_rows: usize) -> ScriptOptions {
+        ScriptOptions {
+            max_rows,
+            capture_changes: false,
+        }
+    }
     use super::*;
     use serde_json::Value;
     use std::collections::BTreeMap;
@@ -742,7 +761,10 @@ mod tests {
         // 결과셋 두 개 + 쓰기 두 개가 섞인 스크립트.
         let script = "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2); \
                       SELECT a FROM t ORDER BY a; SELECT COUNT(*) AS n FROM t;";
-        let r = d.run_script(script, 100, &ctx).await.expect("script");
+        let r = d
+            .run_script(script, &opts(100), &ctx)
+            .await
+            .expect("script");
 
         assert_eq!(r.results.len(), 2, "결과셋이 둘 다 오지 않았다");
         assert_eq!(r.results[0].rows.len(), 2, "첫 SELECT 가 2행이어야 한다");
@@ -750,6 +772,58 @@ mod tests {
         assert_eq!(r.results[1].columns[0].name, "n");
         // 쓰기 문장은 결과셋 대신 영향 행 수로 센다.
         assert_eq!(r.rows_affected, 2, "INSERT 2건이 세어지지 않았다");
+    }
+
+    /// 변경 행 보기: `RETURNING *` 이 끼워져 변경된 행이 돌아오는지.
+    ///
+    /// RETURNING 은 **변경 후 값만** 준다(표준에 변경 전을 주는 방법이 없다).
+    /// SQL Server 의 `OUTPUT` 과 달리 컬럼이 이전/이후로 갈리지 않는다.
+    #[tokio::test]
+    async fn capture_changes_appends_returning() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER, name TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let d = SqliteDriver::from_pool(pool);
+        let capture = ScriptOptions {
+            max_rows: 100,
+            capture_changes: true,
+        };
+
+        let r = d
+            .run_script(
+                "UPDATE t SET name = 'z' WHERE id = 1",
+                &capture,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("script");
+        assert_eq!(r.results.len(), 1, "변경된 행이 오지 않았다");
+        assert_eq!(r.results[0].rows[0][1], serde_json::json!("z"));
+        assert_eq!(r.sql.len(), 1, "고쳐 보낸 SQL 이 실려 오지 않았다");
+        assert!(r.sql[0].ends_with("RETURNING *"), "{}", r.sql[0]);
+
+        // 꺼져 있으면 원문 그대로 — SQL 을 고쳐 보내지 않았음을 확인한다.
+        let r = d
+            .run_script(
+                "UPDATE t SET name = 'y' WHERE id = 2",
+                &opts(100),
+                &ExecContext::default(),
+            )
+            .await
+            .expect("script");
+        assert!(r.results.is_empty());
+        assert!(r.sql.is_empty(), "손대지 않은 SQL 이 실려 왔다");
+        assert_eq!(r.rows_affected, 1);
     }
 
     /// max_rows 를 넘는 결과셋은 잘리고 그 사실이 표시되어야 한다.
@@ -773,7 +847,7 @@ mod tests {
         }
         let d = SqliteDriver::from_pool(pool);
         let r = d
-            .run_script("SELECT a FROM t;", 2, &ExecContext::default())
+            .run_script("SELECT a FROM t;", &opts(2), &ExecContext::default())
             .await
             .expect("script");
         assert_eq!(r.results.len(), 1);

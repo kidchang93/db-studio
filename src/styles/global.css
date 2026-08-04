@@ -1304,6 +1304,63 @@ table.grid tbody tr.selected td {
   background: var(--bg-alt, transparent);
 }
 
+/* 행 단위 변경 내역 — "몇 행 영향" 만으로는 알 수 없는 것을 보여 준다. */
+.log-changes {
+  padding: 4px 10px 8px 46px;
+  font-size: 12px;
+}
+.log-change {
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.log-change:first-child {
+  border-top: none;
+}
+.log-change-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  color: var(--text-muted);
+}
+.log-op {
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--bg);
+}
+.log-op.insert {
+  background: var(--success);
+}
+.log-op.update {
+  background: var(--accent);
+}
+.log-op.delete {
+  background: var(--danger);
+}
+.log-field {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 0 1px 12px;
+  word-break: break-all;
+}
+.log-field-name {
+  min-width: 120px;
+  color: var(--text-muted);
+}
+/* 이전 값은 지워지는 값이라 취소선, 이후 값은 살아남는 값이라 강조. */
+.log-before {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+.log-arrow {
+  color: var(--text-faint);
+}
+.log-after {
+  color: var(--success);
+}
+
 /* ===== 레코드 뷰(사이드 패널) ===== */
 /* 그리드와 패널을 나란히 놓는 가로 컨테이너. */
 .grid-main {

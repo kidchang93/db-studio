@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Trash2, X } from "lucide-react";
-import { useLogStore, type LogEntry, type LogKind } from "../../store/logStore";
+import { useLogStore, type LogChange, type LogEntry, type LogKind } from "../../store/logStore";
+import type { Cell } from "../../types";
 
 const KIND_LABEL: Record<LogKind, string> = {
   query: "조회",
@@ -28,6 +29,48 @@ function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
+const OP_LABEL: Record<LogChange["op"], string> = {
+  insert: "추가",
+  update: "수정",
+  delete: "삭제",
+};
+
+/** 값 한 칸. NULL 과 빈 문자열은 눈으로 구분되어야 한다. */
+function valueText(v: Cell | undefined): string {
+  if (v === null || v === undefined) return "NULL";
+  if (v === "") return "(빈 문자열)";
+  return String(v);
+}
+
+/**
+ * 행 단위 변경 내역.
+ *
+ * "3행 영향"만으로는 무엇이 바뀌었는지 알 수 없다. 어느 행의 어느 컬럼이
+ * 무엇에서 무엇으로 바뀌었는지를 그대로 보여 준다.
+ */
+function Changes({ changes }: { changes: LogChange[] }) {
+  return (
+    <div className="log-changes">
+      {changes.map((c, i) => (
+        <div key={i} className="log-change">
+          <div className="log-change-head">
+            <span className={`log-op ${c.op}`}>{OP_LABEL[c.op]}</span>
+            <span className="mono">{c.key}</span>
+          </div>
+          {c.fields.map((f) => (
+            <div key={f.column} className="log-field mono">
+              <span className="log-field-name">{f.column}</span>
+              {c.op !== "insert" && <span className="log-before">{valueText(f.before)}</span>}
+              {c.op === "update" && <span className="log-arrow">→</span>}
+              {c.op !== "delete" && <span className="log-after">{valueText(f.after)}</span>}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Row({ entry }: { entry: LogEntry }) {
   const [open, setOpen] = useState(false);
   const sql = entry.sql?.trim();
@@ -46,13 +89,16 @@ function Row({ entry }: { entry: LogEntry }) {
         ? oneLine(sql)
         : entry.label;
 
+  const changes = entry.changes ?? [];
+  const expandable = Boolean(sql) || changes.length > 0;
+
   return (
     <div className="log-row" data-kind={entry.kind}>
       <button
         className="log-head"
-        onClick={() => sql && setOpen((v) => !v)}
-        title={sql ? "클릭하면 전문 보기" : undefined}
-        style={{ cursor: sql ? "pointer" : "default" }}
+        onClick={() => expandable && setOpen((v) => !v)}
+        title={expandable ? "클릭하면 변경 내역과 SQL 전문 보기" : undefined}
+        style={{ cursor: expandable ? "pointer" : "default" }}
       >
         <span className="mono muted">{timeOf(entry.ts)}</span>
         <span className="log-kind" style={{ color: KIND_COLOR[entry.kind] }}>
@@ -60,11 +106,15 @@ function Row({ entry }: { entry: LogEntry }) {
         </span>
         <span className={`log-label${sql ? " mono" : ""}`}>{preview}</span>
         {entry.detail && <span className="muted log-detail">{entry.detail}</span>}
+        {changes.length > 0 && (
+          <span className="muted log-detail">변경 {changes.length}행</span>
+        )}
         {entry.elapsedMs !== undefined && (
           <span className="muted mono log-ms">{entry.elapsedMs}ms</span>
         )}
       </button>
-      {/* 한 줄로 잘린 전문·여러 문장은 펼쳐서 본다. */}
+      {/* 무엇이 바뀌었는지가 먼저다. SQL 전문은 그 아래에 둔다. */}
+      {open && changes.length > 0 && <Changes changes={changes} />}
       {open && sql && <pre className="log-sql mono">{sql}</pre>}
     </div>
   );

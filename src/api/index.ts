@@ -16,6 +16,7 @@ import type {
   DdlPlan,
   SchemaInfo,
   ScriptResult,
+  ScriptOptions,
   SetPrimaryKeyRequest,
   TableDdl,
   TableColumns,
@@ -150,11 +151,12 @@ export function schemaSnapshot(
 }
 
 /** 스크립트(여러 문장) 실행. 결과셋을 전부 받는다. */
+/** SQL 콘솔 실행. 문장이 몇 개든 결과셋을 전부 받는다. */
 export function runScript(
   connId: string,
   sql: string,
-  maxRows?: number | null,
+  opts: ScriptOptions,
   ctx?: ExecContext,
 ): Promise<ScriptResult> {
-  return invoke("run_script", { connId, sql, maxRows: maxRows ?? null, ctx });
+  return invoke("run_script", { connId, sql, opts, ctx });
 }

@@ -75,10 +75,13 @@ pub trait Driver: Send + Sync {
     /// `run_query` 는 첫 결과셋만 읽어, 여러 문장을 넣으면 나머지가 사라진다.
     /// 콘솔은 이 메서드를 쓴다 — 실행은 다 됐는데 결과가 안 보이면 "일부가 실행되지
     /// 않았다"고 오해하게 된다.
+    ///
+    /// `opts.capture_changes` 가 켜져 있으면 쓰기 문장에 변경 행 반환 절을 끼워 넣는다
+    /// (`db/script.rs`). 고쳐 보낸 SQL 은 `ScriptResult::sql` 로 함께 돌려준다.
     async fn run_script(
         &self,
         sql: &str,
-        max_rows: usize,
+        opts: &ScriptOptions,
         ctx: &ExecContext,
     ) -> Result<ScriptResult>;
 

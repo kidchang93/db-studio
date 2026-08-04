@@ -226,6 +226,20 @@ export interface ScriptResult {
   /** 결과셋을 내지 않은 문장들의 영향 행 수 합계. */
   rowsAffected: number;
   elapsedMs: number;
+  /** 실제로 서버에 나간 SQL. 원문과 다를 때만 채워진다(OUTPUT/RETURNING 삽입). */
+  sql: string[];
+}
+
+/** 스크립트 실행 옵션 (Rust: ScriptOptions). */
+export interface ScriptOptions {
+  /** 결과셋 **하나당** 최대 행 수. */
+  maxRows: number;
+  /**
+   * 쓰기 문장에 OUTPUT/RETURNING 을 끼워 넣어 변경된 행을 돌려받을지.
+   *
+   * 사용자 SQL 을 고쳐 보내는 일이라 기본은 꺼져 있다.
+   */
+  captureChanges: boolean;
 }
 
 /** 자동완성용 스키마 스냅샷 — 테이블 하나와 그 컬럼 이름들. */
