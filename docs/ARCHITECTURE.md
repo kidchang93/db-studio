@@ -61,6 +61,7 @@
 | `commands/` | Tauri command. 얇게 유지 — 검증·매핑만, DB 로직은 `db/`에 위임 |
 | `db/mod.rs` | `Driver` 트레이트, `DbConnection` enum(드라이버 디스패치), 팩토리 |
 | `db/sql.rs` | 방언(dialect)별 SQL 빌더: quoting · 플레이스홀더 · 정렬/필터/페이지네이션 · CRUD 문장 |
+| `db/script.rs` | 스크립트 텍스트 훑기: SQL Server `GO` 배치 분리, 배치가 결과셋을 낼 수 있는지 판정 |
 | `db/value.rs` | DB 네이티브 값 ↔ `serde_json::Value` 변환 (컬럼 타입 → 논리 타입 매핑), 바인딩 매크로 |
 | `db/{postgres,mysql,sqlite,mssql}.rs` | 드라이버별 구현 |
 
@@ -88,8 +89,9 @@ profiles ◄── commands (연결 저장/로드 시)
 | `primary_keys(table)` | CRUD의 행 식별용 PK 컬럼 조회 |
 | `fetch_page(table, page, sort, filter)` | 그리드 데이터 페이지네이션 조회 |
 | `apply_changes(table, edits)` | pending 편집(insert/update/delete)을 **하나의 트랜잭션**으로 반영 |
-| `run_query(sql)` | 임의 SELECT → `QueryResult{columns, rows}` |
-| `run_execute(sql)` | 임의 DML/DDL → 영향 행 수 |
+| `run_query(sql)` | 단일 SELECT → `QueryResult{columns, rows}`. 내부 조회용(트레이트 메서드) |
+| `run_execute(sql)` | 단일 DML/DDL → 영향 행 수. 내부 실행용(트레이트 메서드) |
+| `run_script(sql)` | 문장 여러 개 → `ScriptResult{results[], rowsAffected}`. **SQL 콘솔이 쓰는 유일한 실행 경로** |
 
 - 드라이버는 **컴파일타임에 컬럼 타입을 모른다.** 결과는 `value.rs`가 각 셀을 `serde_json::Value`로 변환해 균일한 `QueryResult`로 만든다. 값 타입 손실(예: `NUMERIC`, `BYTEA`, `UUID`)은 컬럼 메타의 `logical_type` 문자열로 보존한다.
 - `sqlx`는 Postgres/MySQL/SQLite를 커버하고, SQL Server는 별도 `tiberius`로 구현한다. 두 경로 모두 동일한 `Driver` 트레이트를 만족시켜 `commands/`에서는 구분하지 않는다.

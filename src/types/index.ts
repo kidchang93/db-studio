@@ -214,6 +214,20 @@ export interface ApplyChangesResult {
   statements: string[];
 }
 
+/**
+ * 스크립트(다중 문장) 실행 결과.
+ *
+ * 콘솔에 여러 문장을 넣으면 결과셋이 문장마다 따로 나온다. 첫 것만 읽으면
+ * "일부가 실행되지 않은 것처럼" 보이므로 전부 담아 받는다.
+ */
+export interface ScriptResult {
+  /** 결과셋들. 행을 돌려주는 문장마다 하나씩, 실행 순서대로. */
+  results: QueryResult[];
+  /** 결과셋을 내지 않은 문장들의 영향 행 수 합계. */
+  rowsAffected: number;
+  elapsedMs: number;
+}
+
 /** 자동완성용 스키마 스냅샷 — 테이블 하나와 그 컬럼 이름들. */
 export interface TableColumns {
   /** 이 테이블이 속한 DB. 연결 기본 DB 면 null. */

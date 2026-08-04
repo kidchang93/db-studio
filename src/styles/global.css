@@ -742,6 +742,45 @@ table.grid tr.selected td {
   flex-direction: column;
 }
 
+/* 다중 문장 실행 시 결과셋 하나당 탭 하나. 결과가 하나면 아예 그리지 않는다. */
+.result-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.result-tab {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.result-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.result-tab.on {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  color: var(--text);
+}
+/* 조회와 쓰기가 섞인 스크립트에서 영향 행 수를 함께 보여 준다. */
+.result-affected {
+  align-self: center;
+  margin-left: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 /* ===== 토스트 ===== */
 .toasts {
   position: fixed;

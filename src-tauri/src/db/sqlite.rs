@@ -418,6 +418,56 @@ impl Driver for SqliteDriver {
         }
     }
 
+    /// 스크립트(여러 문장)를 실행하고 **결과셋을 전부** 모은다.
+    ///
+    /// `fetch_many` 는 행과 "문장 완료"를 섞어 흘려 준다. 완료 신호가 곧 결과셋 경계라,
+    /// 그때까지 모은 행이 있으면 결과셋 하나로 접고 없으면 영향 행 수로 센다.
+    async fn run_script(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        ctx: &ExecContext,
+    ) -> Result<ScriptResult> {
+        use futures_util::StreamExt;
+        let start = Instant::now();
+        // SQLite 는 DB·스키마 개념이 없어 컨텍스트를 적용할 것이 없다.
+        let _ = ctx;
+        let mut conn = self.pool.acquire().await?;
+
+        let mut out = ScriptResult::default();
+        let mut cur: Vec<SqliteRow> = Vec::new();
+        let mut truncated = false;
+        {
+            let mut stream = sqlx::raw_sql(AssertSqlSafe(sql)).fetch_many(&mut *conn);
+            while let Some(item) = stream.next().await {
+                match item? {
+                    sqlx::Either::Left(done) => {
+                        if cur.is_empty() {
+                            out.rows_affected += done.rows_affected();
+                        } else {
+                            out.results.push(rows_to_result(&cur, 0, truncated));
+                            cur.clear();
+                            truncated = false;
+                        }
+                    }
+                    sqlx::Either::Right(row) => {
+                        if cur.len() >= max_rows {
+                            truncated = true;
+                        } else {
+                            cur.push(row);
+                        }
+                    }
+                }
+            }
+        }
+        // 완료 신호 없이 끝나는 드라이버를 대비해 남은 행도 접는다.
+        if !cur.is_empty() {
+            out.results.push(rows_to_result(&cur, 0, truncated));
+        }
+        out.elapsed_ms = start.elapsed().as_millis() as u64;
+        Ok(out)
+    }
+
     fn dialect(&self) -> Dialect {
         DIALECT
     }
@@ -669,6 +719,66 @@ mod tests {
         assert_eq!(find("b"), vec!["p", "q", "r"]);
         // 뷰도 자동완성 대상이다.
         assert_eq!(find("v"), vec!["x"]);
+    }
+
+    /// 다중 문장 스크립트가 **결과셋을 모두** 돌려주는지 확인한다.
+    ///
+    /// 첫 결과셋만 읽으면 서버는 다 실행했는데 화면에는 하나만 와서
+    /// "일부가 실행되지 않았다"고 오해하게 된다.
+    #[tokio::test]
+    async fn run_script_returns_every_result_set() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (a INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let d = SqliteDriver::from_pool(pool);
+        let ctx = ExecContext::default();
+
+        // 결과셋 두 개 + 쓰기 두 개가 섞인 스크립트.
+        let script = "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2); \
+                      SELECT a FROM t ORDER BY a; SELECT COUNT(*) AS n FROM t;";
+        let r = d.run_script(script, 100, &ctx).await.expect("script");
+
+        assert_eq!(r.results.len(), 2, "결과셋이 둘 다 오지 않았다");
+        assert_eq!(r.results[0].rows.len(), 2, "첫 SELECT 가 2행이어야 한다");
+        assert_eq!(r.results[1].rows.len(), 1, "두 번째 SELECT 는 1행");
+        assert_eq!(r.results[1].columns[0].name, "n");
+        // 쓰기 문장은 결과셋 대신 영향 행 수로 센다.
+        assert_eq!(r.rows_affected, 2, "INSERT 2건이 세어지지 않았다");
+    }
+
+    /// max_rows 를 넘는 결과셋은 잘리고 그 사실이 표시되어야 한다.
+    #[tokio::test]
+    async fn run_script_truncates_per_result_set() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (a INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for i in 0..5 {
+            sqlx::query("INSERT INTO t VALUES (?)")
+                .bind(i)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let d = SqliteDriver::from_pool(pool);
+        let r = d
+            .run_script("SELECT a FROM t;", 2, &ExecContext::default())
+            .await
+            .expect("script");
+        assert_eq!(r.results.len(), 1);
+        assert_eq!(r.results[0].rows.len(), 2, "max_rows 만큼만 남아야 한다");
+        assert!(r.results[0].truncated, "잘렸다는 표시가 없다");
     }
 
     /// 외래키 관계를 양방향으로 읽는다.

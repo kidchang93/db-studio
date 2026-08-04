@@ -6,6 +6,7 @@
 //! 알려진 한계(MVP): DATE/TIME/DATETIME 계열과 XML 은 best-effort(Debug) 문자열로
 //! 표시된다. 정밀한 시간대/포맷 처리는 후속 과제.
 
+use super::script;
 use super::sql::{self, Dialect};
 use super::value::{self};
 use super::Driver;
@@ -814,6 +815,85 @@ impl Driver for MssqlDriver {
             .filter(|s| !s.is_empty()))
     }
 
+    /// 스크립트(여러 문장)를 실행하고 **결과셋을 전부** 모은다.
+    ///
+    /// 두 가지를 해결한다.
+    ///
+    /// 1. `GO` 는 T-SQL 문장이 아니라 클라이언트 지시어라, 그대로 보내면 서버가
+    ///    "Could not find stored procedure 'GO'" 로 실패한다. 보내기 전에 잘라 낸다.
+    /// 2. `into_first_result` 는 첫 결과셋만 읽고 나머지를 버린다 — 서버는 다 실행했는데
+    ///    화면에는 하나만 오니 "일부가 실행되지 않은 것처럼" 보인다. `into_results` 로 전부 받는다.
+    ///
+    /// 배치마다 조회(`simple_query`)와 실행(`execute`) 중 하나를 골라야 한다. tiberius 는
+    /// 결과셋과 영향 행 수를 **함께 주는 API 가 없다**(전자는 결과셋만, 후자는 행 수만).
+    /// 판단은 `script::may_return_rows` 가 하며 결과셋 쪽으로 치우쳐 있다 — 잘못 골라도
+    /// 영향 행 수를 못 보는 데 그치고, 사용자가 보려던 결과가 사라지지는 않는다.
+    async fn run_script(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        ctx: &ExecContext,
+    ) -> Result<ScriptResult> {
+        let start = Instant::now();
+        self.apply_ctx(ctx).await?;
+
+        let batches = script::split_batches(sql);
+        let mut out = ScriptResult::default();
+        let mut guard = self.client.lock().await;
+
+        for batch in batches {
+            if script::may_return_rows(batch) {
+                let sets = match guard.simple_query(batch).await {
+                    Ok(s) => Some(s.into_results().await?),
+                    Err(e) if is_connection_lost(&e) => None,
+                    Err(e) => return Err(AppError::from(e).with_sql(batch)),
+                };
+                let sets = match sets {
+                    Some(s) => s,
+                    None => {
+                        // 첫 배치에서만 되살린다 — 이미 앞 배치를 반영했다면 어디까지
+                        // 나갔는지 알 수 없으므로 다시 보내면 중복 적용 위험이 있다.
+                        if !out.results.is_empty() || out.rows_affected > 0 {
+                            return Err(AppError::Connection(
+                                "스크립트 도중 연결이 끊어졌습니다. 어디까지 반영됐는지 확인한 뒤 재시도하세요"
+                                    .into(),
+                            ));
+                        }
+                        *guard = Self::open(&self.config).await?;
+                        guard.simple_query(batch).await?.into_results().await?
+                    }
+                };
+                for rows in sets {
+                    let truncated = rows.len() > max_rows;
+                    let slice = if truncated {
+                        &rows[..max_rows]
+                    } else {
+                        &rows[..]
+                    };
+                    out.results.push(rows_to_result(slice, 0, truncated));
+                }
+            } else {
+                let empty: Vec<&dyn ToSql> = Vec::new();
+                // 쓰기는 재시도하지 않는다 — 이미 반영됐는지 알 수 없다(`run_execute` 와 같은 이유).
+                match guard.execute(batch, &empty).await {
+                    Ok(er) => out.rows_affected += er.total(),
+                    Err(e) if is_connection_lost(&e) => {
+                        *guard = Self::open(&self.config).await?;
+                        return Err(AppError::Connection(
+                            "실행 도중 연결이 끊어졌습니다. 다시 연결했으니 반영 여부를 확인한 뒤 재시도하세요"
+                                .into(),
+                        ));
+                    }
+                    Err(e) => return Err(AppError::from(e).with_sql(batch)),
+                }
+            }
+        }
+        drop(guard);
+
+        out.elapsed_ms = start.elapsed().as_millis() as u64;
+        Ok(out)
+    }
+
     fn dialect(&self) -> Dialect {
         DIALECT
     }
@@ -1454,6 +1534,69 @@ mod tests {
             vec!["a", "b", "c"],
             "컬럼 순서가 정의 순이 아니다"
         );
+    }
+
+    /// 다중 문장 스크립트가 결과셋을 모두 돌려주는지 확인한다(사용자가 겪은 증상).
+    #[tokio::test]
+    #[ignore]
+    async fn run_script_returns_every_result_set() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.ms_test') IS NOT NULL DROP TABLE dbo.ms_test")
+            .await
+            .expect("drop");
+        d.simple_rows("CREATE TABLE dbo.ms_test (a INT)")
+            .await
+            .expect("create");
+
+        let script = "INSERT INTO dbo.ms_test VALUES (1); \
+                      INSERT INTO dbo.ms_test VALUES (2); \
+                      SELECT a FROM dbo.ms_test ORDER BY a; \
+                      SELECT COUNT(*) AS n FROM dbo.ms_test;";
+        let r = d
+            .run_script(script, 100, &ExecContext::default())
+            .await
+            .expect("script");
+        println!(
+            "[스크립트] 결과셋 {}개, 행수 {:?}",
+            r.results.len(),
+            r.results.iter().map(|x| x.rows.len()).collect::<Vec<_>>()
+        );
+        assert_eq!(r.results.len(), 2, "결과셋이 둘 다 오지 않았다");
+        assert_eq!(r.results[0].rows.len(), 2);
+        assert_eq!(r.results[1].rows.len(), 1);
+    }
+
+    /// `GO` 로 나뉜 스크립트. 그대로 보내면 서버가 프로시저 'GO' 를 못 찾는다고 실패한다.
+    ///
+    /// 쓰기만 하는 배치의 영향 행 수도 함께 본다 — `simple_query` 로는 알 수 없어
+    /// 배치마다 `execute` 를 골라야 나오는 값이다.
+    #[tokio::test]
+    #[ignore]
+    async fn run_script_splits_go_batches_and_counts_writes() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        d.simple_rows("IF OBJECT_ID('dbo.go_test') IS NOT NULL DROP TABLE dbo.go_test")
+            .await
+            .expect("drop");
+
+        let script = "CREATE TABLE dbo.go_test (a INT)\n\
+                      GO\n\
+                      INSERT INTO dbo.go_test VALUES (1);\n\
+                      INSERT INTO dbo.go_test VALUES (2);\n\
+                      GO\n\
+                      SELECT a FROM dbo.go_test ORDER BY a\n\
+                      GO\n";
+        let r = d
+            .run_script(script, 100, &ExecContext::default())
+            .await
+            .expect("script");
+        println!(
+            "[GO] 결과셋 {}개, 영향 {}행",
+            r.results.len(),
+            r.rows_affected
+        );
+        assert_eq!(r.results.len(), 1, "SELECT 배치 결과가 오지 않았다");
+        assert_eq!(r.results[0].rows.len(), 2);
+        assert_eq!(r.rows_affected, 2, "INSERT 두 건의 영향 행 수를 놓쳤다");
     }
 
     /// keepalive 가 실제로 세션을 살려 두는지 확인한다.

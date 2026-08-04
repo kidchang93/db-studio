@@ -6,7 +6,7 @@ import { Prec } from "@codemirror/state";
 import { sqlCompletionSource, type SchemaEntry } from "../../lib/sqlCompletion";
 import { sql, PostgreSQL, MySQL, SQLite, MSSQL, type SQLDialect } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { AlertTriangle, History, Play, ScrollText, X } from "lucide-react";
+import { AlertTriangle, History, Play, X } from "lucide-react";
 import {
   Group as PanelGroup,
   Panel,
@@ -14,7 +14,7 @@ import {
 } from "react-resizable-panels";
 import * as api from "../../api";
 import { ResultTable } from "../grid/ResultTable";
-import type { DbKind, ExecContext, ExecResult, QueryResult } from "../../types";
+import type { DbKind, ExecContext, QueryResult } from "../../types";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
 import { useHistoryStore } from "../../store/historyStore";
@@ -24,7 +24,6 @@ import { QueryHistory } from "./QueryHistory";
 import {
   findErrorSpot,
   normalizeSmartQuotes,
-  returnsRows,
   scanSqlText,
   type SqlErrorSpot,
 } from "../../lib/sqlText";
@@ -53,8 +52,12 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const ui = useUiStore();
   const kind = useConnectionStore((s) => s.connections[connId]?.handle.kind);
   const [text, setText] = useState("SELECT 1;");
-  const [result, setResult] = useState<QueryResult | null>(null);
-  const [exec, setExec] = useState<ExecResult | null>(null);
+  /** 결과셋들. 다중 문장이면 여러 개가 온다. */
+  const [results, setResults] = useState<QueryResult[]>([]);
+  /** 지금 보고 있는 결과 탭. */
+  const [activeResult, setActiveResult] = useState(0);
+  /** 결과셋을 내지 않은 문장들의 영향 행 수 합계. */
+  const [affected, setAffected] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   /** 마지막 실행이 남긴 오류. 위치를 찾았으면 spot 이 붙는다. */
   const [sqlError, setSqlError] = useState<{ message: string; spot: SqlErrorSpot | null } | null>(
@@ -247,73 +250,62 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
     // 스키마는 ref 로 읽으므로 의존성에 넣지 않는다 — 넣으면 매번 에디터가 재구성된다.
   }, [kind]);
 
+  /**
+   * 실행. **문장 종류를 가르지 않고 스크립트 경로 하나로 보낸다.**
+   *
+   * 예전에는 첫 키워드로 조회/실행을 갈랐는데, 그러면 여러 문장을 넣었을 때 첫 결과셋만
+   * 오고 나머지는 사라진다 — 서버는 다 실행했는데 화면에 안 와서 "일부가 실행되지
+   * 않았다"고 오해하게 된다. 이제 결과셋을 전부 받아 탭으로 보여 준다.
+   */
   async function runAuto() {
-    if (returnsRows(text)) await run();
-    else await runScript();
-  }
-
-  async function run() {
     setRunning(true);
-    setExec(null);
     setSqlError(null);
     try {
-      const r = await api.runQuery(connId, text, 5000, ctx);
-      setResult(r);
+      const r = await api.runScript(connId, text, 5000, ctx);
+      setResults(r.results);
+      setActiveResult(0);
+      setAffected(r.rowsAffected);
+
+      const rowCounts = r.results.map((x) => x.rows.length);
+      // 조회와 쓰기가 섞인 스크립트는 **둘 다** 알려야 한다 — 결과 표가 떴다고
+      // 영향 행 수를 숨기면 무엇이 바뀌었는지 알 길이 없다.
+      const parts: string[] = [];
+      if (r.results.length === 1) {
+        parts.push(`${rowCounts[0]}행 반환${r.results[0].truncated ? " (잘림)" : ""}`);
+      } else if (r.results.length > 1) {
+        parts.push(`결과 ${r.results.length}개 (${rowCounts.join(", ")}행)`);
+      }
+      if (r.rowsAffected > 0 || r.results.length === 0) {
+        parts.push(`${r.rowsAffected}행 영향`);
+      }
+      const summary = parts.join(" · ");
+
       addHistory({
         sql: text,
         connName,
         ok: true,
-        rows: r.rows.length,
+        rows: rowCounts.reduce((a, b) => a + b, r.rowsAffected),
         elapsedMs: r.elapsedMs,
       });
-      ui.setStatus(
-        `${r.rows.length}행 반환${r.truncated ? " (잘림)" : ""} (${r.elapsedMs}ms)`,
-      );
+      ui.setStatus(`${summary} (${r.elapsedMs}ms)`);
       addLog({
-        kind: "query",
-        label: "쿼리 실행",
+        kind: r.results.length === 0 ? "exec" : "query",
+        label: r.results.length > 1 ? "스크립트 실행" : "쿼리 실행",
         sql: text,
-        detail: `${r.rows.length}행 반환${r.truncated ? " (잘림)" : ""}`,
+        detail: summary,
         elapsedMs: r.elapsedMs,
       });
+      // 쓰기가 있었으면 토스트로도 알린다 — 상태바는 화면 맨 아래라 놓치기 쉬운데,
+      // 몇 행이 바뀌었는지는 실행 직후 반드시 확인해야 하는 정보다.
+      if (r.rowsAffected > 0 || r.results.length === 0) {
+        ui.pushToast({
+          kind: "success",
+          title: "실행 완료",
+          message: `${summary} (${r.elapsedMs}ms)`,
+        });
+      }
     } catch (e) {
       // 실패한 쿼리도 히스토리에 남긴다 — 고쳐 쓰려고 다시 꺼내는 경우가 많다.
-      reportSqlError(e, "쿼리 실행 실패");
-    } finally {
-      setRunning(false);
-    }
-  }
-
-  async function runScript() {
-    setRunning(true);
-    setResult(null);
-    setSqlError(null);
-    try {
-      const r = await api.runExecute(connId, text, ctx);
-      setExec(r);
-      addHistory({
-        sql: text,
-        connName,
-        ok: true,
-        rows: r.rowsAffected,
-        elapsedMs: r.elapsedMs,
-      });
-      ui.setStatus(`${r.rowsAffected}행 영향 (${r.elapsedMs}ms)`);
-      addLog({
-        kind: "exec",
-        label: "문장 실행",
-        sql: text,
-        detail: `${r.rowsAffected}행 영향`,
-        elapsedMs: r.elapsedMs,
-      });
-      // 쓰기 결과는 토스트로도 알린다 — 상태바는 화면 맨 아래라 놓치기 쉽고,
-      // 몇 행이 바뀌었는지는 실행 직후 반드시 확인해야 하는 정보다.
-      ui.pushToast({
-        kind: "success",
-        title: "실행 완료",
-        message: `${r.rowsAffected}행 영향 (${r.elapsedMs}ms)`,
-      });
-    } catch (e) {
       reportSqlError(e, "실행 실패");
     } finally {
       setRunning(false);
@@ -327,17 +319,9 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
             className="btn sm primary"
             onClick={() => guarded(runAuto)}
             disabled={running}
-            title="Ctrl/Cmd+Enter"
+            title="Ctrl/Cmd+Enter — 여러 문장을 넣으면 전부 실행하고 결과를 탭으로 보여 줍니다"
           >
             <Play size={13} /> 실행
-          </button>
-          <button
-            className="btn sm"
-            onClick={() => guarded(runScript)}
-            disabled={running}
-            title="DDL/다중 문장"
-          >
-            <ScrollText size={13} /> 스크립트 실행
           </button>
           <button
             className={`btn sm${historyOpen ? " on" : ""}`}
@@ -467,12 +451,34 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
                   <pre className="sql-error-msg mono">{sqlError.message}</pre>
                 </div>
               )}
-              {result ? (
-                <ResultTable result={result} />
-              ) : exec ? (
+              {(results.length > 1 || (results.length > 0 && (affected ?? 0) > 0)) && (
+                <div className="result-tabs" role="tablist">
+                  {results.map((r, i) => (
+                    <button
+                      key={i}
+                      role="tab"
+                      aria-selected={i === activeResult}
+                      className={`result-tab${i === activeResult ? " on" : ""}`}
+                      onClick={() => setActiveResult(i)}
+                      title={`${r.rows.length}행${r.truncated ? " (잘림)" : ""} · ${r.elapsedMs}ms`}
+                    >
+                      결과 {i + 1}
+                      <span className="muted"> {r.rows.length}행</span>
+                    </button>
+                  ))}
+                  {(affected ?? 0) > 0 && (
+                    <span className="result-affected" title="결과셋을 내지 않은 문장들의 영향 행 수">
+                      {affected}행 영향
+                    </span>
+                  )}
+                </div>
+              )}
+              {results[activeResult] ? (
+                <ResultTable result={results[activeResult]} />
+              ) : affected !== null ? (
                 <div className="empty-state">
-                  <h2>{exec.rowsAffected}행 영향</h2>
-                  <div className="muted">{exec.elapsedMs}ms</div>
+                  <h2>{affected}행 영향</h2>
+                  <div className="muted">결과셋을 돌려주는 문장이 없습니다.</div>
                 </div>
               ) : (
                 <div className="empty-state">

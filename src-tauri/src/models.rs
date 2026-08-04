@@ -248,6 +248,23 @@ pub struct TableRef {
     pub name: String,
 }
 
+/// 스크립트(다중 문장) 한 번의 실행 결과.
+///
+/// 콘솔에 여러 문장을 넣으면 서버는 전부 실행하지만, 결과셋은 문장마다 따로 나온다.
+/// **첫 결과셋만 읽고 나머지를 버리면 "일부가 실행되지 않은 것처럼" 보인다** — 실제로는
+/// 실행됐는데 화면에 도달하지 못한 것이다. 그래서 결과셋을 전부 담아 올린다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptResult {
+    /// 결과셋들. 행을 돌려주는 문장마다 하나씩, 실행 순서대로.
+    pub results: Vec<QueryResult>,
+    /// 결과셋을 내지 않은 문장들(DML·DDL)의 영향 행 수 합계.
+    #[serde(default)]
+    pub rows_affected: u64,
+    #[serde(default)]
+    pub elapsed_ms: u64,
+}
+
 /// 자동완성용 스키마 스냅샷 한 줄 — 테이블 하나와 그 컬럼 이름들.
 ///
 /// `list_columns` 는 테이블당 왕복이 한 번씩이라 자동완성에는 쓸 수 없다(테이블이

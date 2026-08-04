@@ -120,8 +120,7 @@ pub fn run() {
             commands::metadata::schema_snapshot,
             commands::data::fetch_table_page,
             commands::data::apply_changes,
-            commands::query::run_query,
-            commands::query::run_execute,
+            commands::query::run_script,
             commands::query::write_text_file,
         ])
         .build(tauri::generate_context!())

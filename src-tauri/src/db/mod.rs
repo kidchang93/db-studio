@@ -6,6 +6,7 @@
 pub mod mssql;
 pub mod mysql;
 pub mod postgres;
+pub mod script;
 pub mod sql;
 pub mod sqlite;
 pub mod tunnel;
@@ -68,6 +69,18 @@ pub trait Driver: Send + Sync {
 
     /// 임의 DML/DDL. 영향 행 수 반환. `ctx` 의 의미는 [`Driver::run_query`] 와 같다.
     async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult>;
+
+    /// 스크립트(여러 문장) 실행. **결과셋을 전부** 담아 돌려준다.
+    ///
+    /// `run_query` 는 첫 결과셋만 읽어, 여러 문장을 넣으면 나머지가 사라진다.
+    /// 콘솔은 이 메서드를 쓴다 — 실행은 다 됐는데 결과가 안 보이면 "일부가 실행되지
+    /// 않았다"고 오해하게 된다.
+    async fn run_script(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        ctx: &ExecContext,
+    ) -> Result<ScriptResult>;
 
     /// 이 드라이버의 SQL 방언. 아래 기본 구현들이 DDL 을 만들 때 쓴다.
     fn dialect(&self) -> sql::Dialect;

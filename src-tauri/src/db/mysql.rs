@@ -484,6 +484,55 @@ impl Driver for MysqlDriver {
         })
     }
 
+    /// 스크립트(여러 문장)를 실행하고 **결과셋을 전부** 모은다.
+    ///
+    /// `fetch_many` 는 행과 "문장 완료"를 섞어 흘려 준다. 완료 신호가 곧 결과셋 경계라,
+    /// 그때까지 모은 행이 있으면 결과셋 하나로 접고 없으면 영향 행 수로 센다.
+    async fn run_script(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        ctx: &ExecContext,
+    ) -> Result<ScriptResult> {
+        use futures_util::StreamExt;
+        let start = Instant::now();
+        let mut conn = self.pool.acquire().await?;
+        self.apply_ctx(&mut conn, ctx).await?;
+
+        let mut out = ScriptResult::default();
+        let mut cur: Vec<MySqlRow> = Vec::new();
+        let mut truncated = false;
+        {
+            let mut stream = sqlx::raw_sql(AssertSqlSafe(sql)).fetch_many(&mut *conn);
+            while let Some(item) = stream.next().await {
+                match item? {
+                    sqlx::Either::Left(done) => {
+                        if cur.is_empty() {
+                            out.rows_affected += done.rows_affected();
+                        } else {
+                            out.results.push(rows_to_result(&cur, 0, truncated));
+                            cur.clear();
+                            truncated = false;
+                        }
+                    }
+                    sqlx::Either::Right(row) => {
+                        if cur.len() >= max_rows {
+                            truncated = true;
+                        } else {
+                            cur.push(row);
+                        }
+                    }
+                }
+            }
+        }
+        // 완료 신호 없이 끝나는 드라이버를 대비해 남은 행도 접는다.
+        if !cur.is_empty() {
+            out.results.push(rows_to_result(&cur, 0, truncated));
+        }
+        out.elapsed_ms = start.elapsed().as_millis() as u64;
+        Ok(out)
+    }
+
     fn dialect(&self) -> Dialect {
         DIALECT
     }

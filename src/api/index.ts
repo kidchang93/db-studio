@@ -12,11 +12,10 @@ import type {
   ConnectionProfile,
   DatabaseInfo,
   ExecContext,
-  ExecResult,
   FetchPageRequest,
   DdlPlan,
-  QueryResult,
   SchemaInfo,
+  ScriptResult,
   SetPrimaryKeyRequest,
   TableDdl,
   TableColumns,
@@ -135,22 +134,6 @@ export function applyChanges(
 }
 
 // ---- 쿼리 ----
-export function runQuery(
-  connId: string,
-  sql: string,
-  maxRows?: number | null,
-  ctx?: ExecContext,
-): Promise<QueryResult> {
-  return invoke("run_query", { connId, sql, maxRows: maxRows ?? null, ctx });
-}
-
-export function runExecute(
-  connId: string,
-  sql: string,
-  ctx?: ExecContext,
-): Promise<ExecResult> {
-  return invoke("run_execute", { connId, sql, ctx });
-}
 
 /** 관련 레코드 탐색(F4)용 외래키 관계. */
 export function tableRelations(connId: string, table: TableRef): Promise<TableRelations> {
@@ -164,4 +147,14 @@ export function schemaSnapshot(
   schema?: string | null,
 ): Promise<TableColumns[]> {
   return invoke("schema_snapshot", { connId, database: database ?? null, schema: schema ?? null });
+}
+
+/** 스크립트(여러 문장) 실행. 결과셋을 전부 받는다. */
+export function runScript(
+  connId: string,
+  sql: string,
+  maxRows?: number | null,
+  ctx?: ExecContext,
+): Promise<ScriptResult> {
+  return invoke("run_script", { connId, sql, maxRows: maxRows ?? null, ctx });
 }
