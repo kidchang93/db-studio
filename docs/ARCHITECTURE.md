@@ -63,8 +63,9 @@
 | `db/sql.rs` | 방언(dialect)별 SQL 빌더: quoting · 플레이스홀더 · 정렬/필터/페이지네이션 · CRUD 문장 |
 | `db/script.rs` | 스크립트 텍스트 훑기: SQL Server `GO` 배치 분리, 결과셋 여부 판정, 변경 행 반환 절(`OUTPUT`/`RETURNING`) 삽입 |
 | `db/value.rs` | DB 네이티브 값 ↔ `serde_json::Value` 변환 (컬럼 타입 → 논리 타입 매핑), 바인딩 매크로 |
+| `db/cursor.rs` | 콘솔 결과를 전용 연결로 이어 읽는 커서의 공통 틀(PostgreSQL · MySQL · SQLite). 열린 결과마다 작업 하나가 전용 연결을 쥐고 "다음 n행"에 답한다. 연결당 최대 3개 (`DESIGN.md` §6-3) |
 | `db/{postgres,mysql,sqlite,mssql}.rs` | 드라이버별 구현 |
-| `vendor/tiberius/` | tiberius 패치 사본(`Cargo.toml` 의 `[patch.crates-io]`). 코드페이지 디코딩 실패로 결과셋 전체가 버려지던 것을 대체 문자로 바꾼다(`DESIGN.md` §4). 변경점은 그 `Cargo.toml` 머리말에 적고, 업스트림을 올릴 때 다시 적용한다 |
+| `vendor/tiberius/` | tiberius 패치 사본(`Cargo.toml` 의 `[patch.crates-io]`). 코드페이지 디코딩 실패로 결과셋 전체가 버려지던 것을 대체 문자로 바꾸고(`DESIGN.md` §4), 서버 커서 결과의 브라우즈 모드 토큰(TABNAME·COLINFO)을 건너뛴다(§6-3). 변경점은 그 `Cargo.toml` 머리말에 적고, 업스트림을 올릴 때 다시 적용한다 |
 
 ## 3. 레이어와 의존성 방향
 
@@ -92,7 +93,8 @@ profiles ◄── commands (연결 저장/로드 시)
 | `apply_changes(table, edits)` | pending 편집(insert/update/delete)을 **하나의 트랜잭션**으로 반영 |
 | `run_query(sql)` | 단일 SELECT → `QueryResult{columns, rows}`. 내부 조회용(트레이트 메서드) |
 | `run_execute(sql)` | 단일 DML/DDL → 영향 행 수. 내부 실행용(트레이트 메서드) |
-| `run_script(sql, opts)` | 문장 여러 개 → `ScriptResult{results[], rowsAffected, sql[]}`. **SQL 콘솔이 쓰는 유일한 실행 경로**. `opts.captureChanges` 로 변경 행까지 받는다 |
+| `run_script(sql, opts)` | 문장 여러 개 → `ScriptResult{results[], rowsAffected, sql[], cursors[]}`. **SQL 콘솔이 쓰는 유일한 실행 경로**. `opts.captureChanges` 로 변경 행까지 받는다. SELECT 로만 이뤄졌으면 문장마다 커서로 첫 페이지만 받고 결과별 커서를 `cursors` 로 돌려준다 — SQL Server 는 세션의 API 서버 커서, 나머지는 전용 연결(`db/cursor.rs`) |
+| `fetch_cursor(cursor, n)` / `close_cursor(cursor)` | 콘솔 결과의 다음 페이지를 서버 커서에서 이어 읽기 / 닫기(`DESIGN.md` §6-3 "결과 페이징"). 커서를 쓰지 않는 드라이버는 기본 구현(지원 안 함) |
 
 - 드라이버는 **컴파일타임에 컬럼 타입을 모른다.** 결과는 `value.rs`가 각 셀을 `serde_json::Value`로 변환해 균일한 `QueryResult`로 만든다. 값 타입 손실(예: `NUMERIC`, `BYTEA`, `UUID`)은 컬럼 메타의 `logical_type` 문자열로 보존한다.
 - `sqlx`는 Postgres/MySQL/SQLite를 커버하고, SQL Server는 별도 `tiberius`로 구현한다. 두 경로 모두 동일한 `Driver` 트레이트를 만족시켜 `commands/`에서는 구분하지 않는다.

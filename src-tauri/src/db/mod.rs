@@ -3,6 +3,7 @@
 //! 모든 DB 는 [`Driver`] 트레이트로 추상화되고, [`DbConnection`] enum 으로
 //! 정적 디스패치된다. 상위 계층(`commands`)은 DB 종류를 구분하지 않는다.
 
+pub mod cursor;
 pub mod mssql;
 pub mod mysql;
 pub mod postgres;
@@ -84,6 +85,21 @@ pub trait Driver: Send + Sync {
         opts: &ScriptOptions,
         ctx: &ExecContext,
     ) -> Result<ScriptResult>;
+
+    /// 콘솔 결과의 다음 페이지를 서버 커서에서 **이어 읽는다**(쿼리를 다시 실행하지 않는다).
+    ///
+    /// 커서는 `run_script` 가 SELECT 한 문장을 받았을 때 연다(`ScriptResult::cursor`).
+    /// 서버 커서를 쓰지 않는 드라이버는 커서를 열지 않으므로 여기 올 일이 없다.
+    async fn fetch_cursor(&self, _cursor: i64, _max_rows: usize) -> Result<CursorPage> {
+        Err(AppError::Validation(
+            "이 DB 는 결과 페이징(서버 커서)을 지원하지 않습니다".into(),
+        ))
+    }
+
+    /// 열어 둔 서버 커서를 닫는다. 이미 닫혔으면 할 일이 없다.
+    async fn close_cursor(&self, _cursor: i64) -> Result<()> {
+        Ok(())
+    }
 
     /// 이 드라이버의 SQL 방언. 아래 기본 구현들이 DDL 을 만들 때 쓴다.
     fn dialect(&self) -> sql::Dialect;

@@ -735,14 +735,17 @@ table.grid tr.selected td {
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
+/* 분할 패널(Panel)은 flex 컨테이너가 아니라 flex: 1 만으로는 높이를 받지 못한다.
+   높이가 풀리면 결과 표 스크롤 영역이 행 수만큼 늘어나 가상 스크롤이 전부 보인다고 보고
+   모든 행을 그린다(docs/DESIGN.md §6-9). */
 .query-result {
-  flex: 1;
+  height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* 다중 문장 실행 시 결과셋 하나당 탭 하나. 결과가 하나면 아예 그리지 않는다. */
+/* 결과셋 하나당 탭 하나. 하나여도 그린다 — 고정(pin)하려면 탭이 있어야 한다. */
 .result-tabs {
   display: flex;
   gap: 2px;
@@ -779,6 +782,73 @@ table.grid tr.selected td {
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+/* 결과 탭의 고정(pin)·닫기 — 고정한 탭은 다음 실행에도 남는다(DataGrip 의 Pin Tab). */
+.result-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+.result-tab-btn {
+  display: inline-flex;
+  padding: 1px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  visibility: hidden;
+}
+.result-tab:hover .result-tab-btn,
+.result-tab.on .result-tab-btn {
+  visibility: visible;
+}
+.result-tab-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.result-pin-mark {
+  color: var(--accent);
+}
+/* 결과 페이지 이동 — 다음 페이지는 서버 커서에서 이어 읽는다(docs/DESIGN.md §6-3). */
+.result-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+/* 결과 안 필터 — 받아 둔 행을 좁혀 본다(서버에 다시 묻지 않는다). */
+.result-filter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 220px;
+  min-width: 120px;
+}
+.result-filter .where-input {
+  flex: 1;
+  min-width: 0;
+}
+.result-pane > .grid-main {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ===== 가상 스크롤(docs/DESIGN.md §6-9) =====
+   보이는 행만 그리면 자동 열 폭이 스크롤할 때마다 달라진다. 데이터로 정한 폭(colgroup)으로 고정한다. */
+table.grid.fixed {
+  table-layout: fixed;
+  min-width: 0;
+}
+/* 위아래 여백을 채우는 빈 행 — 높이만 있고 보이지 않는다. */
+table.grid tr.v-spacer td {
+  height: auto;
+  padding: 0;
+  border: none;
+}
+table.grid tbody tr.v-spacer:hover td {
+  background: none;
 }
 
 /* ===== 토스트 ===== */
@@ -1611,10 +1681,11 @@ li[aria-selected] .cm-completionMatchedText {
 }
 
 /* 쿼리 결과 영역 — 툴바 + 표를 세로로 채운다. */
+/* 결과 탭 줄·오류 배너 아래의 남은 높이를 쓴다(height: 100% 면 그만큼 넘쳐 아래 행이 가려진다). */
 .result-pane {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
   min-height: 0;
 }
 .result-pane > .grid-scroll {

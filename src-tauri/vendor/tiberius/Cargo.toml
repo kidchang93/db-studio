@@ -5,6 +5,10 @@
 #   - src/tds/codec/column_data/string.rs : varchar/char 코드페이지 디코딩, nvarchar UTF-16 디코딩
 #   - src/tds/codec/column_data/text.rs   : text 코드페이지 디코딩, ntext UTF-16 디코딩
 #   → 풀 수 없는 바이트를 오류 대신 U+FFFD 로 바꾼다 (docs/DESIGN.md §4).
+#   - src/tds/codec/token/token_type.rs : TABNAME(0xA4) 토큰 종류 추가
+#   - src/tds/stream/token.rs            : TABNAME·COLINFO(브라우즈 모드 토큰)를 길이만큼 건너뛴다
+#   → 서버 커서(sp_cursoropen/sp_cursorfetch) 결과를 읽을 수 있게 한다. 원본은 TABNAME 에서
+#     "invalid token type a4" 로 결과를 버리고 COLINFO 에서는 panic 한다 (docs/DESIGN.md §6-3).
 #   - 이 파일: 가져오지 않은 tests/ 를 가리키는 [[test]] 와 dev-dependencies 제거
 #
 # 업스트림을 올릴 때는 새 버전을 다시 복사하고 위 패치를 다시 적용한다.

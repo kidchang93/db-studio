@@ -24,6 +24,37 @@ pub async fn run_script(
         .await
 }
 
+/// 콘솔 결과의 다음 페이지. `run_script` 가 서버 커서를 열었을 때만 부른다.
+#[tauri::command]
+pub async fn fetch_cursor(
+    state: tauri::State<'_, AppState>,
+    conn_id: String,
+    cursor: i64,
+    max_rows: usize,
+) -> Result<CursorPage> {
+    state
+        .get(&conn_id)
+        .await?
+        .as_driver()
+        .fetch_cursor(cursor, max_rows)
+        .await
+}
+
+/// 열어 둔 서버 커서를 닫는다(결과가 사라질 때 — 새로 실행 · 결과 탭 닫기 · 콘솔 닫기).
+#[tauri::command]
+pub async fn close_cursor(
+    state: tauri::State<'_, AppState>,
+    conn_id: String,
+    cursor: i64,
+) -> Result<()> {
+    state
+        .get(&conn_id)
+        .await?
+        .as_driver()
+        .close_cursor(cursor)
+        .await
+}
+
 /// 내보내기 결과를 파일로 저장한다.
 ///
 /// 경로는 프론트가 OS 저장 대화상자로 받아 넘긴다(임의 경로 쓰기를 막기 위해

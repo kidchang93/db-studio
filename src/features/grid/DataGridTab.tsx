@@ -46,6 +46,9 @@ import { ExportDialog } from "./ExportDialog";
 import { ColumnVisibilityPanel } from "./ColumnVisibilityPanel";
 import { isShortcut, shortcutLabel } from "../../lib/keymap";
 import { RecordView } from "./RecordView";
+import { ValueViewer, prettyValue } from "./ValueViewer";
+import { SpacerRow, useVirtualRows } from "./virtualRows";
+import { columnWidths, rowNumberWidth } from "../../lib/gridLayout";
 import { normalizeSmartQuotes, rawTextInputProps } from "../../lib/sqlText";
 
 interface Props {
@@ -731,21 +734,6 @@ export function DataGridTab({ connId, table, initialFilters, active = true }: Pr
     gridRef.current?.focus();
   }
 
-  /** 값 뷰어 표시용. JSON 으로 보이면 들여쓰기해 읽기 좋게 만든다. */
-  function prettyValue(v: Cell): string {
-    if (v === null || v === undefined) return "NULL";
-    const s = String(v);
-    const t = s.trim();
-    if (/^[[{]/.test(t) && /[\]}]$/.test(t)) {
-      try {
-        return JSON.stringify(JSON.parse(t), null, 2);
-      } catch {
-        return s; // JSON 이 아니면 원문 그대로
-      }
-    }
-    return s;
-  }
-
   /** 그리드 키보드 조작: 방향키 이동, Enter/F2 편집, Space 행 선택. */
   /**
    * 관련 레코드 탐색(F4 — DataGrip 과 같은 키).
@@ -894,13 +882,26 @@ export function DataGridTab({ connId, table, initialFilters, active = true }: Pr
     }
   }
 
-  // 커서가 보이는 영역 밖으로 나가면 따라 스크롤한다.
+  // 열 폭은 페이지 전체로 한 번 정한다 — 보이는 행만 그리면 자동 폭이 스크롤마다 달라진다.
+  const widths = useMemo(
+    () => columnWidths(columns, rows.length, (r, c) => rows[r][colIndex[columns[c].name]]),
+    [columns, rows, colIndex],
+  );
+  const rowNoW = rowNumberWidth(offset + rows.length);
+  const { virtualizer, items: vItems, padTop, padBottom } = useVirtualRows(rows.length, gridRef);
+
+  // 커서가 보이는 영역 밖으로 나가면 따라 스크롤한다. 가상 스크롤이라 그 행이 아직 그려지지
+  // 않았을 수 있어 먼저 행 위치로 옮기고, 그려진 뒤 가로 방향을 셀에 맞춘다.
   useEffect(() => {
     if (!cursor) return;
-    gridRef.current
-      ?.querySelector<HTMLElement>("td.cell-cursor")
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [cursor]);
+    virtualizer.scrollToIndex(cursor.row, { align: "auto" });
+    const id = requestAnimationFrame(() =>
+      gridRef.current
+        ?.querySelector<HTMLElement>("td.cell-cursor")
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" }),
+    );
+    return () => cancelAnimationFrame(id);
+  }, [cursor, virtualizer]);
 
   /** 내보내기 대상 — 셀 범위를 잡았으면 그 부분만, 아니면 현재 페이지 전체. */
   const exportRows = useMemo(() => {
@@ -1254,7 +1255,16 @@ export function DataGridTab({ connId, table, initialFilters, active = true }: Pr
         tabIndex={0}
         onKeyDown={onGridKeyDown}
       >
-        <table className="grid">
+        <table
+          className="grid fixed"
+          style={{ width: rowNoW + widths.reduce((a, b) => a + b, 0) }}
+        >
+          <colgroup>
+            <col style={{ width: rowNoW }} />
+            {widths.map((w, j) => (
+              <col key={j} style={{ width: w }} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
               <th className="rownum">#</th>
@@ -1276,12 +1286,15 @@ export function DataGridTab({ connId, table, initialFilters, active = true }: Pr
             </tr>
           </thead>
           <tbody>
-            {rows.map((_, rowIdx) => {
+            <SpacerRow height={padTop} colSpan={columns.length + 1} />
+            {vItems.map(({ index: rowIdx }) => {
               const isDel = deleted.has(rowIdx);
               const isSel = selection.has(rowIdx);
               return (
                 <tr
                   key={rowIdx}
+                  data-index={rowIdx}
+                  ref={virtualizer.measureElement}
                   className={isDel ? "del-row" : isSel ? "selected" : ""}
                 >
                   <td className="rownum" onClick={() => editable && toggleRowSelect(rowIdx)}>
@@ -1337,6 +1350,7 @@ export function DataGridTab({ connId, table, initialFilters, active = true }: Pr
                 </tr>
               );
             })}
+            <SpacerRow height={padBottom} colSpan={columns.length + 1} />
 
             {/* 신규 삽입 행 */}
             {inserts.map((ins) => (
@@ -1447,12 +1461,9 @@ export function DataGridTab({ connId, table, initialFilters, active = true }: Pr
             setAnchor({ row, col: cursor?.col ?? 0 });
             setGotoRow(null);
             gridRef.current?.focus();
-            // 렌더 뒤에 스크롤해야 해당 행이 이미 그려져 있다.
-            setTimeout(() => {
-              gridRef.current
-                ?.querySelectorAll<HTMLElement>("tbody tr")
-                [row]?.scrollIntoView({ block: "center" });
-            }, 0);
+            // 가상 스크롤이라 그 행이 아직 그려지지 않았을 수 있다 — DOM 이 아니라 인덱스로 옮긴다.
+            // 커서 추적 스크롤(가장자리 맞춤)이 먼저 돈 뒤 가운데로 오게 한 박자 늦춘다.
+            setTimeout(() => virtualizer.scrollToIndex(row, { align: "center" }), 0);
           }}
         />
       )}
@@ -1554,54 +1565,6 @@ function ViewToggle({
         <Columns3 size={12} /> 구조
       </button>
     </div>
-  );
-}
-
-/** 셀 값 전체를 펼쳐 보는 패널. 그리드에서는 값이 잘려 보이기 때문에 따로 띄운다. */
-function ValueViewer({
-  column,
-  rowNo,
-  value,
-  pretty,
-  onCopy,
-  onClose,
-}: {
-  column: { name: string; dbType: string };
-  rowNo: number;
-  value: Cell;
-  pretty: string;
-  onCopy: (text: string) => void;
-  onClose: () => void;
-}) {
-  const isNull = value === null || value === undefined;
-  const raw = isNull ? "" : String(value);
-  return (
-    <Modal
-      title={`${column.name} — ${rowNo}행`}
-      onClose={onClose}
-      footer={
-        <>
-          <span className="muted value-meta">
-            {column.dbType}
-            {!isNull && ` · ${raw.length.toLocaleString()}자`}
-          </span>
-          <span className="spacer" />
-          <button className="btn" onClick={onClose}>
-            닫기
-          </button>
-          <button
-            className="btn primary"
-            onClick={() => onCopy(raw)}
-            disabled={isNull}
-            title="값을 클립보드로 복사"
-          >
-            <Copy size={13} /> 복사
-          </button>
-        </>
-      }
-    >
-      <pre className={`value-view mono${isNull ? " null" : ""}`}>{pretty}</pre>
-    </Modal>
   );
 }
 

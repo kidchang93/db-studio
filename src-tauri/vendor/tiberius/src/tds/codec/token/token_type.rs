@@ -25,6 +25,11 @@ uint_enum! {
         /// Describes the column information in browse mode.
         ColInfo = 0xA5,
 
+        /// [db-studio 패치] Names of the tables in browse mode. 서버 커서(`sp_cursoropen`·
+        /// `sp_cursorfetch`)와 `FOR BROWSE` 결과에 붙는다. 원본은 이 토큰을 몰라
+        /// "invalid token type a4" 로 결과 전체를 버렸다. 읽지 않고 건너뛴다(`stream/token.rs`).
+        TabName = 0xA4,
+
         /// Used to send the return value of an RPCto the client. When an RPC is
         /// executed, the associated parameters may be defined as input or
         /// output (or "return") parameters.

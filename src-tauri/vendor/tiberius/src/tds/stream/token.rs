@@ -219,18 +219,43 @@ where
 
     pub fn try_unfold(self) -> BoxStream<'a, crate::Result<ReceivedToken>> {
         let stream = futures_util::stream::try_unfold(self, |mut this| async move {
-            if this.conn.is_eof() {
-                match this.last_error {
-                    None => return Ok(None),
-                    Some(error) => return Err(error),
+            loop {
+                if this.conn.is_eof() {
+                    match this.last_error {
+                        None => return Ok(None),
+                        Some(error) => return Err(error),
+                    }
                 }
+
+                let ty_byte = this.conn.read_u8().await?;
+
+                let ty = TokenType::try_from(ty_byte).map_err(|_| {
+                    Error::Protocol(format!("invalid token type {:x}", ty_byte).into())
+                })?;
+
+                // [db-studio 패치] 브라우즈 모드 토큰(TABNAME·COLINFO)은 서버 커서
+                // (sp_cursoropen/sp_cursorfetch)와 FOR BROWSE 결과에 붙는다. 행 데이터와 무관한
+                // 부가 정보라 앞의 길이(USHORT)만큼 건너뛰고 다음 토큰을 읽는다. 원본은 TABNAME 에서
+                // "invalid token type a4" 로 결과를 버리고, COLINFO 에서는 아래 `panic!` 에 걸린다.
+                if matches!(ty, TokenType::TabName | TokenType::ColInfo) {
+                    let len = this.conn.read_u16_le().await? as usize;
+                    for _ in 0..len {
+                        this.conn.read_u8().await?;
+                    }
+                    continue;
+                }
+
+                return Ok(Some((this.read_token(ty).await?, this)));
             }
+        });
 
-            let ty_byte = this.conn.read_u8().await?;
+        Box::pin(stream)
+    }
 
-            let ty = TokenType::try_from(ty_byte)
-                .map_err(|_| Error::Protocol(format!("invalid token type {:x}", ty_byte).into()))?;
-
+    /// 토큰 종류에 맞게 본문을 읽는다(원본 `try_unfold` 의 분기를 옮긴 것).
+    async fn read_token(&mut self, ty: TokenType) -> crate::Result<ReceivedToken> {
+        let this = self;
+        {
             let token = match ty {
                 TokenType::ReturnStatus => this.get_return_status().await?,
                 TokenType::ColMetaData => this.get_col_metadata().await?,
@@ -250,9 +275,7 @@ where
                 _ => panic!("Token {:?} unimplemented!", ty),
             };
 
-            Ok(Some((token, this)))
-        });
-
-        Box::pin(stream)
+            Ok(token)
+        }
     }
 }

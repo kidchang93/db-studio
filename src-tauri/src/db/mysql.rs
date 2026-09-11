@@ -3,6 +3,7 @@
 //! MySQL 은 "스키마 == 데이터베이스" 이므로 `list_schemas` 는 비우고,
 //! 테이블은 연결된(또는 지정된) 데이터베이스 아래에서 조회한다.
 
+use super::cursor::{self, Cursors};
 use super::script;
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
@@ -13,13 +14,15 @@ use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
 use sqlx::AssertSqlSafe;
-use sqlx::{Column, Row, TypeInfo};
+use sqlx::{Column, Connection as _, Row, TypeInfo};
 use std::time::Instant;
 
 const DIALECT: Dialect = Dialect::MYSQL;
 
 pub struct MysqlDriver {
     pool: MySqlPool,
+    /// 콘솔 결과를 이어 읽는 전용 연결들(docs/DESIGN.md §6-3).
+    cursors: Cursors,
 }
 
 impl MysqlDriver {
@@ -70,11 +73,56 @@ impl MysqlDriver {
             .max_lifetime(std::time::Duration::from_secs(1800))
             .connect_with(opts)
             .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            cursors: Cursors::default(),
+        })
     }
 
     pub async fn close(&self) {
+        self.cursors.close_all();
         self.pool.close().await;
+    }
+
+    /// SELECT 한 문장을 **전용 연결에서 스트리밍으로** 열고 첫 페이지를 읽는다(docs/DESIGN.md §6-3).
+    ///
+    /// MySQL 에는 일반 쿼리에 쓸 서버 커서가 없다. 결과를 n행씩 읽다 멈춰 두면 서버는 보내다
+    /// 기다린다. 문장은 준비된 문장으로 보내 여러 문장이 섞여 있으면 거절된다(일반 실행으로 돌아간다).
+    async fn open_cursor(
+        &self,
+        sql: &str,
+        page: usize,
+        ctx: &ExecContext,
+    ) -> Result<(QueryResult, Option<i64>)> {
+        let mut pooled = self.pool.acquire().await?;
+        self.apply_ctx(&mut pooled, ctx).await?;
+        let mut conn = pooled.detach();
+        let sql = sql.to_string();
+        let (tx, mut rx) = cursor::channel();
+        tokio::spawn(async move {
+            let mut finished = false;
+            {
+                let mut stream = sqlx::query(AssertSqlSafe(sql)).fetch(&mut conn);
+                while let Some(req) = rx.recv().await {
+                    let n = req.size();
+                    let page = cursor::take_rows(&mut stream, n)
+                        .await
+                        .map(|rows| cursor::page(&rows, n, rows_to_result));
+                    finished = matches!(&page, Ok(p) if p.done);
+                    if !req.answer(page) {
+                        break;
+                    }
+                }
+            }
+            // 끝까지 읽었으면 정상 종료한다. 도중에 닫으면 정상 종료가 남은 행을 끝까지 받아
+            // 버린 뒤에야 끝나므로, 연결을 끊어 서버 쪽 전송을 멈춘다.
+            if finished {
+                let _ = conn.close().await;
+            } else {
+                drop(conn);
+            }
+        });
+        self.cursors.first_page(tx, page).await
     }
 
     /// 실행 컨텍스트를 **주어진 커넥션에** 적용한다.
@@ -503,6 +551,17 @@ impl Driver for MysqlDriver {
             .then(|| script::with_change_output(sql, script::ChangeOutput::Unsupported))
             .flatten();
         let sql = rewritten.as_ref().map(|r| r.sql.as_str()).unwrap_or(sql);
+        // SELECT 로만 이뤄졌으면 결과마다 전용 연결로 열어 첫 페이지만 받는다 — 나머지는 페이지를
+        // 넘길 때 이어 읽는다(docs/DESIGN.md §6-3). 열 수 없으면 아래에서 한 번에 실행한다.
+        if !opts.capture_changes {
+            let opened = cursor::open_all(&self.cursors, sql, |stmt| {
+                Box::pin(self.open_cursor(stmt, opts.max_rows, ctx))
+            })
+            .await;
+            if let Some(res) = opened {
+                return Ok(res);
+            }
+        }
         let mut conn = self.pool.acquire().await?;
         self.apply_ctx(&mut conn, ctx).await?;
 
@@ -547,6 +606,15 @@ impl Driver for MysqlDriver {
         DIALECT
     }
 
+    async fn fetch_cursor(&self, cursor: i64, max_rows: usize) -> Result<CursorPage> {
+        self.cursors.fetch(cursor, max_rows).await
+    }
+
+    async fn close_cursor(&self, cursor: i64) -> Result<()> {
+        self.cursors.close(cursor);
+        Ok(())
+    }
+
     async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult> {
         let start = Instant::now();
         let mut conn = self.pool.acquire().await?;
@@ -558,5 +626,152 @@ impl Driver for MysqlDriver {
             rows_affected: r.rows_affected(),
             elapsed_ms: start.elapsed().as_millis() as u64,
         })
+    }
+}
+
+/// 실제 서버가 필요한 테스트. `#[ignore]` 로 두고 로컬 컨테이너로 돌린다:
+/// `docker run -d --name dbstudio-mysql -e MYSQL_ROOT_PASSWORD='DbStudio!Test123' -e MYSQL_DATABASE=dbstudio -p 13306:3306 mysql:8.0`
+/// → `cargo test --lib mysql -- --ignored`
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(max_rows: usize) -> ScriptOptions {
+        ScriptOptions {
+            max_rows,
+            capture_changes: false,
+        }
+    }
+
+    fn test_config() -> ConnectionConfig {
+        ConnectionConfig {
+            kind: DbKind::Mysql,
+            host: Some("localhost".into()),
+            port: Some(
+                std::env::var("MYSQL_PORT")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(13306),
+            ),
+            database: Some("dbstudio".into()),
+            username: Some("root".into()),
+            password: Some("DbStudio!Test123".into()),
+            // MySQL 8 기본 인증(caching_sha2_password)은 TLS 없이 접속하려면 sqlx 의 RSA 기능이
+            // 필요한데 켜져 있지 않다. 테스트는 TLS 로 접속한다.
+            ssl: Some(SslConfig {
+                mode: SslMode::Require,
+                ca_cert: None,
+                client_cert: None,
+                client_key: None,
+            }),
+            ssh: None,
+            params: Default::default(),
+        }
+    }
+
+    /// 콘솔 결과 페이징: 전용 연결로 이어 읽는다(docs/DESIGN.md §6-3).
+    #[tokio::test]
+    #[ignore]
+    async fn select_pages_through_dedicated_connection() {
+        let d = MysqlDriver::connect(&test_config()).await.expect("연결");
+        let ctx = ExecContext::default();
+        d.run_script(
+            "DROP TABLE IF EXISTS page_t; \
+             CREATE TABLE page_t (id INT PRIMARY KEY, v VARCHAR(10)); \
+             INSERT INTO page_t VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e'),(6,'f'),(7,'g')",
+            &opts(10),
+            &ctx,
+        )
+        .await
+        .expect("준비");
+        let ids = |r: &QueryResult| -> Vec<i64> {
+            r.rows
+                .iter()
+                .map(|row| row[0].as_i64().expect("id"))
+                .collect()
+        };
+
+        // 첫 페이지만 받고 커서가 열린다. 다음 페이지는 이어 읽는다.
+        let r = d
+            .run_script("SELECT id, v FROM page_t ORDER BY id", &opts(3), &ctx)
+            .await
+            .expect("열기");
+        let cur = r.cursors[0].expect("커서가 열려야 한다");
+        assert_eq!(ids(&r.results[0]), vec![1, 2, 3]);
+        assert!(r.results[0].truncated);
+        // 커서가 열려 있어도 그리드 조회는 풀에서 따로 돈다.
+        d.run_query("SELECT COUNT(*) AS n FROM page_t", 1, &ctx)
+            .await
+            .expect("다른 조회");
+        let p2 = d.fetch_cursor(cur, 3).await.expect("2쪽");
+        assert_eq!(ids(&p2.result), vec![4, 5, 6]);
+        assert!(!p2.done);
+        let p3 = d.fetch_cursor(cur, 3).await.expect("3쪽");
+        assert_eq!(ids(&p3.result), vec![7]);
+        assert!(p3.done, "모자라게 오면 끝이다");
+        assert!(
+            d.fetch_cursor(cur, 3).await.is_err(),
+            "끝까지 읽은 커서를 다시 읽었다"
+        );
+
+        // SELECT 로만 이뤄진 스크립트는 결과마다 커서를 연다.
+        let two = d
+            .run_script(
+                "SELECT id FROM page_t ORDER BY id; SELECT v FROM page_t ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("두 SELECT");
+        assert_eq!(two.results.len(), 2);
+        let c1 = two.cursors[0].expect("첫 결과의 커서");
+        let c2 = two.cursors[1].expect("둘째 결과의 커서");
+        assert_eq!(
+            ids(&d.fetch_cursor(c1, 3).await.expect("첫 결과 2쪽").result),
+            vec![4, 5, 6]
+        );
+        let v2 = d.fetch_cursor(c2, 3).await.expect("둘째 결과 2쪽");
+        assert_eq!(v2.result.rows[0][0], serde_json::json!("d"));
+        d.close_cursor(c1).await.expect("닫기");
+        d.close_cursor(c2).await.expect("닫기");
+        assert!(d.fetch_cursor(c1, 3).await.is_err(), "닫은 커서를 읽었다");
+
+        // 동시에 열 수 있는 결과는 MAX_OPEN 개 — 넘으면 커서 없이 행 제한으로 받는다.
+        let mut open = Vec::new();
+        for _ in 0..cursor::MAX_OPEN {
+            let r = d
+                .run_script("SELECT id FROM page_t ORDER BY id", &opts(2), &ctx)
+                .await
+                .expect("열기");
+            open.push(r.cursors[0].expect("커서"));
+        }
+        let over = d
+            .run_script("SELECT id FROM page_t ORDER BY id", &opts(2), &ctx)
+            .await
+            .expect("자리 없음");
+        assert!(
+            over.cursors.iter().all(Option::is_none),
+            "자리가 없는데 커서를 열었다"
+        );
+        assert!(over.results[0].truncated);
+        for c in open {
+            d.close_cursor(c).await.expect("닫기");
+        }
+
+        // 다른 문장이 섞이면 한 번에 실행한다.
+        let mixed = d
+            .run_script(
+                "SET @x = 2; SELECT id FROM page_t WHERE id > @x ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("섞인 스크립트");
+        assert!(
+            mixed.cursors.iter().all(Option::is_none),
+            "섞인 스크립트에서 커서를 열었다"
+        );
+
+        d.close().await;
     }
 }

@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CursorPage,
   AlterColumnRequest,
   ApplyChangesRequest,
   ApplyChangesResult,
@@ -159,4 +160,14 @@ export function runScript(
   ctx?: ExecContext,
 ): Promise<ScriptResult> {
   return invoke("run_script", { connId, sql, opts, ctx });
+}
+
+/** 콘솔 결과의 다음 페이지를 서버 커서에서 이어 읽는다(`runScript` 가 커서를 열었을 때만). */
+export function fetchCursor(connId: string, cursor: number, maxRows: number): Promise<CursorPage> {
+  return invoke("fetch_cursor", { connId, cursor, maxRows });
+}
+
+/** 열어 둔 서버 커서를 닫는다. */
+export function closeCursor(connId: string, cursor: number): Promise<void> {
+  return invoke("close_cursor", { connId, cursor });
 }

@@ -1,5 +1,6 @@
 //! SQLite 드라이버 (sqlx). 서버 불필요 — 파일/인메모리.
 
+use super::cursor::{self, Cursors};
 use super::script;
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
@@ -10,13 +11,17 @@ use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::AssertSqlSafe;
-use sqlx::{Column, Row, TypeInfo};
+use sqlx::{Column, Connection as _, Row, TypeInfo};
 use std::time::Instant;
 
 const DIALECT: Dialect = Dialect::SQLITE;
 
 pub struct SqliteDriver {
     pool: SqlitePool,
+    /// 메모리 DB 인가. 메모리 DB 는 연결마다 **별개의 빈 DB** 라 전용 연결로 이어 읽을 수 없다.
+    memory: bool,
+    /// 콘솔 결과를 이어 읽는 전용 연결들(docs/DESIGN.md §6-3).
+    cursors: Cursors,
 }
 
 impl SqliteDriver {
@@ -25,7 +30,8 @@ impl SqliteDriver {
             .database
             .clone()
             .ok_or_else(|| AppError::Validation("SQLite 파일 경로가 필요합니다".into()))?;
-        let opts = if path == ":memory:" {
+        let memory = path == ":memory:";
+        let opts = if memory {
             SqliteConnectOptions::new().in_memory(true)
         } else {
             SqliteConnectOptions::new()
@@ -36,16 +42,57 @@ impl SqliteDriver {
             .max_connections(5)
             .connect_with(opts)
             .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            memory,
+            cursors: Cursors::default(),
+        })
     }
 
     pub async fn close(&self) {
+        self.cursors.close_all();
         self.pool.close().await;
     }
 
+    /// 테스트용 — 메모리 DB 풀을 감싼다.
     #[cfg(test)]
     pub fn from_pool(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            memory: true,
+            cursors: Cursors::default(),
+        }
+    }
+
+    /// SELECT 한 문장을 **전용 연결에서 스트리밍으로** 열고 첫 페이지를 읽는다(docs/DESIGN.md §6-3).
+    ///
+    /// 파일을 여러 연결이 함께 여는 것이라 가능하다. 열어 둔 동안 읽기 잠금이 남아, 롤백 저널
+    /// 모드에서는 다른 연결의 쓰기가 잠시 기다린다(WAL 모드는 영향 없음).
+    async fn open_cursor(&self, sql: &str, page: usize) -> Result<(QueryResult, Option<i64>)> {
+        if self.memory {
+            return Err(AppError::Validation(
+                "메모리 DB 는 연결마다 따로라 이어 읽을 수 없습니다".into(),
+            ));
+        }
+        let mut conn = self.pool.acquire().await?.detach();
+        let sql = sql.to_string();
+        let (tx, mut rx) = cursor::channel();
+        tokio::spawn(async move {
+            {
+                let mut stream = sqlx::query(AssertSqlSafe(sql)).fetch(&mut conn);
+                while let Some(req) = rx.recv().await {
+                    let n = req.size();
+                    let page = cursor::take_rows(&mut stream, n)
+                        .await
+                        .map(|rows| cursor::page(&rows, n, rows_to_result));
+                    if !req.answer(page) {
+                        break;
+                    }
+                }
+            }
+            let _ = conn.close().await;
+        });
+        self.cursors.first_page(tx, page).await
     }
 }
 
@@ -440,6 +487,17 @@ impl Driver for SqliteDriver {
         let sql = rewritten.as_ref().map(|r| r.sql.as_str()).unwrap_or(sql);
         // SQLite 는 DB·스키마 개념이 없어 컨텍스트를 적용할 것이 없다.
         let _ = ctx;
+        // SELECT 로만 이뤄졌으면 결과마다 전용 연결로 열어 첫 페이지만 받는다 — 나머지는 페이지를
+        // 넘길 때 이어 읽는다(docs/DESIGN.md §6-3). 열 수 없으면 아래에서 한 번에 실행한다.
+        if !opts.capture_changes {
+            let opened = cursor::open_all(&self.cursors, sql, |stmt| {
+                Box::pin(self.open_cursor(stmt, opts.max_rows))
+            })
+            .await;
+            if let Some(res) = opened {
+                return Ok(res);
+            }
+        }
         let mut conn = self.pool.acquire().await?;
 
         let mut out = ScriptResult::default();
@@ -481,6 +539,15 @@ impl Driver for SqliteDriver {
 
     fn dialect(&self) -> Dialect {
         DIALECT
+    }
+
+    async fn fetch_cursor(&self, cursor: i64, max_rows: usize) -> Result<CursorPage> {
+        self.cursors.fetch(cursor, max_rows).await
+    }
+
+    async fn close_cursor(&self, cursor: i64) -> Result<()> {
+        self.cursors.close(cursor);
+        Ok(())
     }
 
     async fn run_execute(&self, sql: &str, _ctx: &ExecContext) -> Result<ExecResult> {
@@ -1023,5 +1090,136 @@ mod tests {
         .await
         .expect_err("없는 행은 오류여야 한다");
         assert!(err.to_string().contains("찾지 못했습니다"), "메시지: {err}");
+    }
+
+    /// 콘솔 결과 페이징(SQLite): 파일 DB 는 전용 연결로 이어 읽는다(docs/DESIGN.md §6-3).
+    /// 메모리 DB 는 연결마다 별개의 빈 DB 라 커서를 열지 않고 한 번에 받는다.
+    #[tokio::test]
+    async fn select_pages_through_dedicated_connection() {
+        let path = std::env::temp_dir().join(format!("dbstudio-page-{}.db", uuid::Uuid::new_v4()));
+        let d = SqliteDriver::connect(&ConnectionConfig {
+            kind: DbKind::Sqlite,
+            host: None,
+            port: None,
+            database: Some(path.to_string_lossy().into_owned()),
+            username: None,
+            password: None,
+            ssl: None,
+            ssh: None,
+            params: Default::default(),
+        })
+        .await
+        .expect("연결");
+        let ctx = ExecContext::default();
+        d.run_execute(
+            "CREATE TABLE page_t (id INTEGER PRIMARY KEY, v TEXT); \
+             INSERT INTO page_t VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e'),(6,'f'),(7,'g');",
+            &ctx,
+        )
+        .await
+        .expect("준비");
+        let ids = |r: &QueryResult| -> Vec<i64> {
+            r.rows
+                .iter()
+                .map(|row| row[0].as_i64().expect("id"))
+                .collect()
+        };
+
+        // 첫 페이지만 받고 커서가 열린다. 다음 페이지는 이어 읽는다.
+        let r = d
+            .run_script("SELECT id, v FROM page_t ORDER BY id", &opts(3), &ctx)
+            .await
+            .expect("열기");
+        let cur = r.cursors[0].expect("커서가 열려야 한다");
+        assert_eq!(ids(&r.results[0]), vec![1, 2, 3]);
+        assert!(r.results[0].truncated);
+        let p2 = d.fetch_cursor(cur, 3).await.expect("2쪽");
+        assert_eq!(ids(&p2.result), vec![4, 5, 6]);
+        assert!(!p2.done);
+        let p3 = d.fetch_cursor(cur, 3).await.expect("3쪽");
+        assert_eq!(ids(&p3.result), vec![7]);
+        assert!(p3.done, "모자라게 오면 끝이다");
+        assert!(
+            d.fetch_cursor(cur, 3).await.is_err(),
+            "끝까지 읽은 커서를 다시 읽었다"
+        );
+
+        // SELECT 로만 이뤄진 스크립트는 결과마다 커서를 연다.
+        let two = d
+            .run_script(
+                "SELECT id FROM page_t ORDER BY id; SELECT v FROM page_t ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("두 SELECT");
+        assert_eq!(two.results.len(), 2);
+        let c1 = two.cursors[0].expect("첫 결과의 커서");
+        let c2 = two.cursors[1].expect("둘째 결과의 커서");
+        assert_eq!(
+            ids(&d.fetch_cursor(c1, 3).await.expect("첫 결과 2쪽").result),
+            vec![4, 5, 6]
+        );
+        let v2 = d.fetch_cursor(c2, 3).await.expect("둘째 결과 2쪽");
+        assert_eq!(v2.result.rows[0][0], Value::from("d"));
+        d.close_cursor(c1).await.expect("닫기");
+        d.close_cursor(c2).await.expect("닫기");
+        assert!(d.fetch_cursor(c1, 3).await.is_err(), "닫은 커서를 읽었다");
+
+        // 동시에 열 수 있는 결과는 MAX_OPEN 개 — 넘으면 커서 없이 행 제한으로 받는다.
+        let mut open = Vec::new();
+        for _ in 0..cursor::MAX_OPEN {
+            let r = d
+                .run_script("SELECT id FROM page_t", &opts(2), &ctx)
+                .await
+                .expect("열기");
+            open.push(r.cursors[0].expect("커서"));
+        }
+        let over = d
+            .run_script("SELECT id FROM page_t", &opts(2), &ctx)
+            .await
+            .expect("자리 없음");
+        assert!(
+            over.cursors.iter().all(Option::is_none),
+            "자리가 없는데 커서를 열었다"
+        );
+        assert!(over.results[0].truncated);
+        for c in open {
+            d.close_cursor(c).await.expect("닫기");
+        }
+
+        // 다른 문장이 섞이면 한 번에 실행한다.
+        let mixed = d
+            .run_script(
+                "CREATE TEMP TABLE tmp_x AS SELECT 1 AS x; SELECT x FROM tmp_x",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("섞인 스크립트");
+        assert!(mixed.cursors.iter().all(Option::is_none));
+
+        d.close().await;
+        let _ = std::fs::remove_file(&path);
+
+        // 메모리 DB 는 커서를 열지 않는다.
+        let mem = mem_driver().await;
+        for i in 0..5 {
+            mem.run_execute(
+                &format!("INSERT INTO users (name, age) VALUES ('u{i}', {i})"),
+                &ctx,
+            )
+            .await
+            .expect("넣기");
+        }
+        let r = mem
+            .run_script("SELECT id FROM users", &opts(2), &ctx)
+            .await
+            .expect("메모리 조회");
+        assert!(
+            r.cursors.iter().all(Option::is_none),
+            "메모리 DB 에서 커서를 열었다"
+        );
+        assert!(r.results[0].truncated);
     }
 }

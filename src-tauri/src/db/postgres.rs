@@ -1,5 +1,6 @@
 //! PostgreSQL 드라이버 (sqlx).
 
+use super::cursor::{self, Cursors};
 use super::script;
 use super::sql::{self, Dialect};
 use super::value::{self, bind_json};
@@ -10,14 +11,19 @@ use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode};
 use sqlx::AssertSqlSafe;
-use sqlx::{Column, Row, TypeInfo};
+use sqlx::{Column, Connection as _, Row, TypeInfo};
 use std::time::Instant;
 
 const DIALECT: Dialect = Dialect::POSTGRES;
 
 pub struct PostgresDriver {
     pool: PgPool,
+    /// 콘솔 결과를 이어 읽는 전용 연결들(docs/DESIGN.md §6-3).
+    cursors: Cursors,
 }
+
+/// 콘솔 결과 페이징에 쓰는 서버 커서 이름. 전용 연결마다 하나라 겹치지 않는다.
+const PG_CURSOR: &str = "__dbstudio_page";
 
 impl PostgresDriver {
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
@@ -75,10 +81,14 @@ impl PostgresDriver {
             .max_lifetime(std::time::Duration::from_secs(1800))
             .connect_with(opts)
             .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            cursors: Cursors::default(),
+        })
     }
 
     pub async fn close(&self) {
+        self.cursors.close_all();
         self.pool.close().await;
     }
 
@@ -98,6 +108,47 @@ impl PostgresDriver {
                 .await?;
         }
         Ok(())
+    }
+
+    /// SELECT 한 문장을 **전용 연결의 서버 커서**로 열고 첫 페이지를 읽는다(docs/DESIGN.md §6-3).
+    ///
+    /// PostgreSQL 커서는 트랜잭션 안에서만 산다. 결과를 열어 둔 동안 이 연결은 "트랜잭션 중"으로
+    /// 남으므로 풀에서 떼어 낸다. `READ ONLY` 로 열어 무엇이 섞여 들어와도 쓰지 못한다. 문장은
+    /// 준비된 문장으로 보내 여러 문장이 섞여 있으면 여기서 거절된다(일반 실행으로 돌아간다).
+    async fn open_cursor(
+        &self,
+        sql: &str,
+        page: usize,
+        ctx: &ExecContext,
+    ) -> Result<(QueryResult, Option<i64>)> {
+        let mut pooled = self.pool.acquire().await?;
+        self.apply_ctx(&mut pooled, ctx).await?;
+        let mut conn = pooled.detach();
+        sqlx::query("BEGIN READ ONLY").execute(&mut conn).await?;
+        let declare = format!("DECLARE {PG_CURSOR} NO SCROLL CURSOR FOR {sql}");
+        if let Err(e) = sqlx::query(AssertSqlSafe(declare)).execute(&mut conn).await {
+            let _ = conn.close().await;
+            return Err(e.into());
+        }
+        let (tx, mut rx) = cursor::channel();
+        tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                let n = req.size();
+                let fetch = format!("FETCH FORWARD {n} FROM {PG_CURSOR}");
+                let page: Result<CursorPage> = sqlx::query(AssertSqlSafe(fetch))
+                    .fetch_all(&mut conn)
+                    .await
+                    .map(|rows| cursor::page(&rows, n, rows_to_result))
+                    .map_err(Into::into);
+                if !req.answer(page) {
+                    break;
+                }
+            }
+            // 읽기 전용 트랜잭션이라 되돌려도 잃는 것이 없다 — 커서도 함께 닫힌다.
+            let _ = sqlx::query("ROLLBACK").execute(&mut conn).await;
+            let _ = conn.close().await;
+        });
+        self.cursors.first_page(tx, page).await
     }
 }
 
@@ -502,6 +553,17 @@ impl Driver for PostgresDriver {
             .then(|| script::with_change_output(sql, script::ChangeOutput::Returning))
             .flatten();
         let sql = rewritten.as_ref().map(|r| r.sql.as_str()).unwrap_or(sql);
+        // SELECT 로만 이뤄졌으면 결과마다 전용 연결로 열어 첫 페이지만 받는다 — 나머지는 페이지를
+        // 넘길 때 이어 읽는다(docs/DESIGN.md §6-3). 열 수 없으면 아래에서 한 번에 실행한다.
+        if !opts.capture_changes {
+            let opened = cursor::open_all(&self.cursors, sql, |stmt| {
+                Box::pin(self.open_cursor(stmt, opts.max_rows, ctx))
+            })
+            .await;
+            if let Some(res) = opened {
+                return Ok(res);
+            }
+        }
         let mut conn = self.pool.acquire().await?;
         self.apply_ctx(&mut conn, ctx).await?;
 
@@ -546,6 +608,15 @@ impl Driver for PostgresDriver {
         DIALECT
     }
 
+    async fn fetch_cursor(&self, cursor: i64, max_rows: usize) -> Result<CursorPage> {
+        self.cursors.fetch(cursor, max_rows).await
+    }
+
+    async fn close_cursor(&self, cursor: i64) -> Result<()> {
+        self.cursors.close(cursor);
+        Ok(())
+    }
+
     async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult> {
         let start = Instant::now();
         let mut conn = self.pool.acquire().await?;
@@ -557,5 +628,181 @@ impl Driver for PostgresDriver {
             rows_affected: r.rows_affected(),
             elapsed_ms: start.elapsed().as_millis() as u64,
         })
+    }
+}
+
+/// 실제 서버가 필요한 테스트. `#[ignore]` 로 두고 로컬 컨테이너로 돌린다:
+/// `docker run -d --name dbstudio-pg -e POSTGRES_PASSWORD='DbStudio!Test123' -p 15432:5432 postgres:16-alpine`
+/// → `cargo test --lib postgres -- --ignored`
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(max_rows: usize) -> ScriptOptions {
+        ScriptOptions {
+            max_rows,
+            capture_changes: false,
+        }
+    }
+
+    fn test_config() -> ConnectionConfig {
+        ConnectionConfig {
+            kind: DbKind::Postgres,
+            host: Some("localhost".into()),
+            port: Some(
+                std::env::var("PG_PORT")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(15432),
+            ),
+            database: Some("postgres".into()),
+            username: Some("postgres".into()),
+            password: Some("DbStudio!Test123".into()),
+            ssl: Some(SslConfig {
+                mode: SslMode::Disable,
+                ca_cert: None,
+                client_cert: None,
+                client_key: None,
+            }),
+            ssh: None,
+            params: Default::default(),
+        }
+    }
+
+    /// 콘솔 결과 페이징: 전용 연결로 이어 읽는다(docs/DESIGN.md §6-3).
+    #[tokio::test]
+    #[ignore]
+    async fn select_pages_through_dedicated_connection() {
+        let d = PostgresDriver::connect(&test_config()).await.expect("연결");
+        let ctx = ExecContext::default();
+        d.run_script(
+            "DROP TABLE IF EXISTS page_t; \
+             CREATE TABLE page_t (id INT PRIMARY KEY, v VARCHAR(10)); \
+             INSERT INTO page_t VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e'),(6,'f'),(7,'g')",
+            &opts(10),
+            &ctx,
+        )
+        .await
+        .expect("준비");
+        let ids = |r: &QueryResult| -> Vec<i64> {
+            r.rows
+                .iter()
+                .map(|row| row[0].as_i64().expect("id"))
+                .collect()
+        };
+
+        // 첫 페이지만 받고 커서가 열린다. 다음 페이지는 이어 읽는다.
+        let r = d
+            .run_script("SELECT id, v FROM page_t ORDER BY id", &opts(3), &ctx)
+            .await
+            .expect("열기");
+        let cur = r.cursors[0].expect("커서가 열려야 한다");
+        assert_eq!(ids(&r.results[0]), vec![1, 2, 3]);
+        assert!(r.results[0].truncated);
+        // 커서가 열려 있어도 그리드 조회는 풀에서 따로 돈다.
+        d.run_query("SELECT COUNT(*) AS n FROM page_t", 1, &ctx)
+            .await
+            .expect("다른 조회");
+        let p2 = d.fetch_cursor(cur, 3).await.expect("2쪽");
+        assert_eq!(ids(&p2.result), vec![4, 5, 6]);
+        assert!(!p2.done);
+        let p3 = d.fetch_cursor(cur, 3).await.expect("3쪽");
+        assert_eq!(ids(&p3.result), vec![7]);
+        assert!(p3.done, "모자라게 오면 끝이다");
+        assert!(
+            d.fetch_cursor(cur, 3).await.is_err(),
+            "끝까지 읽은 커서를 다시 읽었다"
+        );
+
+        // SELECT 로만 이뤄진 스크립트는 결과마다 커서를 연다.
+        let two = d
+            .run_script(
+                "SELECT id FROM page_t ORDER BY id; SELECT v FROM page_t ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("두 SELECT");
+        assert_eq!(two.results.len(), 2);
+        let c1 = two.cursors[0].expect("첫 결과의 커서");
+        let c2 = two.cursors[1].expect("둘째 결과의 커서");
+        assert_eq!(
+            ids(&d.fetch_cursor(c1, 3).await.expect("첫 결과 2쪽").result),
+            vec![4, 5, 6]
+        );
+        let v2 = d.fetch_cursor(c2, 3).await.expect("둘째 결과 2쪽");
+        assert_eq!(v2.result.rows[0][0], serde_json::json!("d"));
+        d.close_cursor(c1).await.expect("닫기");
+        d.close_cursor(c2).await.expect("닫기");
+        assert!(d.fetch_cursor(c1, 3).await.is_err(), "닫은 커서를 읽었다");
+
+        // 동시에 열 수 있는 결과는 MAX_OPEN 개 — 넘으면 커서 없이 행 제한으로 받는다.
+        let mut open = Vec::new();
+        for _ in 0..cursor::MAX_OPEN {
+            let r = d
+                .run_script("SELECT id FROM page_t ORDER BY id", &opts(2), &ctx)
+                .await
+                .expect("열기");
+            open.push(r.cursors[0].expect("커서"));
+        }
+        let over = d
+            .run_script("SELECT id FROM page_t ORDER BY id", &opts(2), &ctx)
+            .await
+            .expect("자리 없음");
+        assert!(
+            over.cursors.iter().all(Option::is_none),
+            "자리가 없는데 커서를 열었다"
+        );
+        assert!(over.results[0].truncated);
+        for c in open {
+            d.close_cursor(c).await.expect("닫기");
+        }
+
+        // 다른 문장이 섞이면 한 번에 실행한다.
+        let mixed = d
+            .run_script(
+                "SET search_path TO public; SELECT id FROM page_t ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("섞인 스크립트");
+        assert!(
+            mixed.cursors.iter().all(Option::is_none),
+            "섞인 스크립트에서 커서를 열었다"
+        );
+
+        // 닫은 커서의 전용 세션은 서버에서 사라져야 한다(연결을 쥔 채 남으면 세션이 쌓인다).
+        let r = d
+            .run_script("SELECT id FROM page_t ORDER BY id", &opts(2), &ctx)
+            .await
+            .expect("열기");
+        let cur = r.cursors[0].expect("커서");
+        // pg_stat_activity.query 는 쉬는 세션이 마지막으로 실행한 쿼리다. 이 세기 쿼리의 문자열이
+        // 다른 풀 연결에 남아 세어지지 않도록, 커서 세션의 마지막 쿼리(FETCH·DECLARE)만 센다.
+        let sessions = || async {
+            let sql = "SELECT count(*)::int AS n FROM pg_stat_activity \
+                       WHERE (query LIKE 'FETCH FORWARD %' OR query LIKE 'DECLARE %') \
+                       AND pid <> pg_backend_pid()";
+            d.run_query(sql, 1, &ExecContext::default())
+                .await
+                .expect("세션 수")
+                .rows[0][0]
+                .as_i64()
+                .expect("n")
+        };
+        assert_eq!(sessions().await, 1, "열어 둔 커서의 세션이 보여야 한다");
+        d.close_cursor(cur).await.expect("닫기");
+        let mut left = 1;
+        for _ in 0..30 {
+            left = sessions().await;
+            if left == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(left, 0, "닫은 커서의 세션이 남았다");
+
+        d.close().await;
     }
 }

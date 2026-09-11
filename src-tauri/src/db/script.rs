@@ -160,11 +160,24 @@ struct Word<'a> {
     stmt_start: bool,
 }
 
+/// 훑은 결과: 낱말들과 최상위 `;` 의 위치(문장 경계).
+struct Scan<'a> {
+    words: Vec<Word<'a>>,
+    /// 괄호·문자열·주석 밖의 `;` 바이트 오프셋.
+    semis: Vec<usize>,
+}
+
+/// 낱말만 필요한 판정용.
+fn scan_words(sql: &str) -> Vec<Word<'_>> {
+    scan(sql).words
+}
+
 /// 문자열·주석을 피해 낱말만 훑는다. 아래 판정들이 전부 이 결과 위에 얹힌다.
 ///
 /// 문자열·주석 안을 해석하면 `'DELETE'` 나 `-- OUTPUT` 같은 것이 구조로 오인된다.
-fn scan_words(sql: &str) -> Vec<Word<'_>> {
+fn scan(sql: &str) -> Scan<'_> {
     let mut out = Vec::new();
+    let mut semis = Vec::new();
     let mut ctx = Ctx::Code;
     let mut depth = 0i32;
     let mut stmt_start = true;
@@ -226,7 +239,12 @@ fn scan_words(sql: &str) -> Vec<Word<'_>> {
                 }
                 '(' => depth += 1,
                 ')' => depth = (depth - 1).max(0),
-                ';' => stmt_start = true,
+                ';' => {
+                    stmt_start = true;
+                    if depth == 0 {
+                        semis.push(i);
+                    }
+                }
                 _ if c.is_ascii_alphabetic() || c == '_' || c == '@' => {
                     let end = sql[i..]
                         .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '@'))
@@ -254,7 +272,7 @@ fn scan_words(sql: &str) -> Vec<Word<'_>> {
         }
         i += 1;
     }
-    out
+    Scan { words: out, semis }
 }
 
 fn eq(w: &Word<'_>, kw: &str) -> bool {
@@ -275,6 +293,75 @@ pub fn may_return_rows(batch: &str) -> bool {
         (w.stmt_start && ROW_RETURNING.iter().any(|k| eq(w, k)))
             || (w.depth == 0 && (eq(w, "output") || eq(w, "returning")))
     })
+}
+
+/// 서버 커서로 열어 **페이지로 넘겨 볼** 수 있는 배치인가(docs/DESIGN.md §6-3 "결과 페이징").
+///
+/// SELECT(또는 `WITH … SELECT`) **한 문장**이고, 결과를 테이블에 쓰지 않고(`INTO` 없음),
+/// 커서가 받지 않는 형태(`FOR XML`·`FOR JSON`)가 아닐 때만 true.
+/// **애매하면 false** — 그러면 지금처럼 한 번에 실행해 행 제한에서 자른다. 쓰기 문장이
+/// 커서로 열리는 일은 없어야 한다.
+pub fn is_single_select(batch: &str) -> bool {
+    let words = scan_words(batch);
+    let mut starts = words.iter().filter(|w| w.stmt_start);
+    let (Some(first), None) = (starts.next(), starts.next()) else {
+        return false;
+    };
+    if !(eq(first, "select") || eq(first, "with")) {
+        return false;
+    }
+    // 최상위에서 쓰기 동사를 만나면 SELECT 가 아니다(`WITH … UPDATE`, `SELECT … INTO`).
+    // 괄호 안(서브쿼리)은 문법상 이런 것이 올 수 없으므로 최상위만 본다.
+    const WRITES: [&str; 7] = [
+        "into", "insert", "update", "delete", "merge", "exec", "execute",
+    ];
+    if words
+        .iter()
+        .any(|w| w.depth == 0 && WRITES.iter().any(|k| eq(w, k)))
+    {
+        return false;
+    }
+    // FOR XML / FOR JSON / FOR BROWSE 는 서버 커서가 받지 않는다.
+    !words.windows(2).any(|p| {
+        p[0].depth == 0
+            && eq(&p[0], "for")
+            && (eq(&p[1], "xml") || eq(&p[1], "json") || eq(&p[1], "browse"))
+    })
+}
+
+/// SELECT 로만 이뤄진 배치를 문장별로 나눈다 — 문장마다 따로 서버 커서로 열기 위해
+/// (docs/DESIGN.md §6-3 "결과 페이징").
+///
+/// **모든 문장이 [`is_single_select`] 일 때만** `Some`. DECLARE·SET·쓰기·`SELECT INTO` 가 하나라도
+/// 섞이면 `None` — 문장끼리 변수·임시 테이블로 이어져 있을 수 있어 따로 실행하면 결과가 달라진다.
+/// 문장 경계는 최상위 `;` 다. 세미콜론 없이 이어 쓴 문장은 한 문장으로 보이고, 그러면 커서 열기가
+/// 실패해 한 번에 실행된다(결과는 같다).
+pub fn split_selects(batch: &str) -> Option<Vec<&str>> {
+    let Scan { words, semis } = scan(batch);
+    let starts: Vec<usize> = words
+        .iter()
+        .filter(|w| w.stmt_start)
+        .map(|w| w.at)
+        .collect();
+    if starts.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(starts.len());
+    for (i, &from) in starts.iter().enumerate() {
+        let next = starts.get(i + 1).copied().unwrap_or(batch.len());
+        // 문장은 그 뒤 첫 최상위 `;` 에서 끝난다(없으면 다음 문장 시작 전까지).
+        let to = semis
+            .iter()
+            .copied()
+            .find(|&p| p > from && p < next)
+            .unwrap_or(next);
+        let piece = batch[from..to].trim_end();
+        if !is_single_select(piece) {
+            return None;
+        }
+        out.push(piece);
+    }
+    Some(out)
 }
 
 /// 변경된 행을 돌려받는 절의 방언별 형태.
@@ -474,6 +561,73 @@ mod tests {
     }
     fn ret(sql: &str) -> Option<String> {
         with_change_output(sql, ChangeOutput::Returning).map(|r| r.sql)
+    }
+
+    /// SELECT 로만 이뤄진 배치만 문장별로 나눈다. 문자열·주석 안의 `;` 는 경계가 아니다.
+    #[test]
+    fn split_selects_only_when_every_statement_is_select() {
+        assert_eq!(
+            split_selects("SELECT 1; SELECT 2"),
+            Some(vec!["SELECT 1", "SELECT 2"])
+        );
+        assert_eq!(
+            split_selects("SELECT 'a;b' AS s; -- 주석;\nSELECT 2;"),
+            Some(vec!["SELECT 'a;b' AS s", "SELECT 2"])
+        );
+        assert_eq!(split_selects("SELECT 1"), Some(vec!["SELECT 1"]));
+        assert_eq!(
+            split_selects("WITH c AS (SELECT 1 AS x) SELECT * FROM c; SELECT 2"),
+            Some(vec![
+                "WITH c AS (SELECT 1 AS x) SELECT * FROM c",
+                "SELECT 2"
+            ])
+        );
+        // 다른 문장이 섞이면 나누지 않는다 — 변수·임시 테이블이 이어져야 한다.
+        assert_eq!(split_selects("DECLARE @x INT = 1; SELECT @x"), None);
+        assert_eq!(split_selects("SELECT 1; UPDATE t SET a = 1"), None);
+        assert_eq!(
+            split_selects("SELECT * INTO #t FROM u; SELECT * FROM #t"),
+            None
+        );
+        assert_eq!(split_selects("SET NOCOUNT ON; SELECT 1"), None);
+        assert_eq!(split_selects(""), None);
+    }
+
+    /// 서버 커서로 열어도 되는 배치는 SELECT 한 문장뿐이다 — 쓰기가 커서로 열리면 안 된다.
+    #[test]
+    fn single_select_detection() {
+        for sql in [
+            "SELECT * FROM t",
+            "  select 1;",
+            "WITH c AS (SELECT 1 AS x) SELECT * FROM c",
+            "SELECT * FROM t WHERE id IN (SELECT id FROM u)",
+            "SELECT 'a; DELETE FROM t' AS s",
+            "-- DELETE FROM t\nSELECT 1",
+            "SELECT [update], [into] FROM t",
+        ] {
+            assert!(
+                is_single_select(sql),
+                "SELECT 한 문장인데 아니라고 봤다: {sql}"
+            );
+        }
+        for sql in [
+            "SELECT 1; SELECT 2",
+            "SELECT * INTO t2 FROM t",
+            "WITH c AS (SELECT 1 AS x) INSERT INTO t SELECT * FROM c",
+            "WITH c AS (SELECT 1 AS x) UPDATE t SET a = 1",
+            "UPDATE t SET a = 1",
+            "DECLARE @x INT = 1; SELECT @x",
+            "EXEC sp_who",
+            "SELECT * FROM t FOR JSON PATH",
+            "SELECT * FROM t FOR XML AUTO",
+            "(SELECT 1)",
+            "",
+        ] {
+            assert!(
+                !is_single_select(sql),
+                "커서로 열면 안 되는데 열겠다고 봤다: {sql}"
+            );
+        }
     }
 
     #[test]

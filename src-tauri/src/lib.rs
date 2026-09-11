@@ -121,6 +121,8 @@ pub fn run() {
             commands::data::fetch_table_page,
             commands::data::apply_changes,
             commands::query::run_script,
+            commands::query::fetch_cursor,
+            commands::query::close_cursor,
             commands::query::write_text_file,
         ])
         .build(tauri::generate_context!())

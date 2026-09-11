@@ -13,9 +13,13 @@ use super::Driver;
 use crate::error::{AppError, Result};
 use crate::models::*;
 use async_trait::async_trait;
+use futures_util::TryStreamExt;
 use serde_json::Value;
 use std::time::Instant;
-use tiberius::{AuthMethod, Client, ColumnData, ColumnType, Config, Row as TdsRow, ToSql};
+use tiberius::{
+    AuthMethod, Client, Column, ColumnData, ColumnType, Config, QueryItem, QueryStream,
+    Row as TdsRow, ToSql,
+};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -239,6 +243,67 @@ fn rows_to_result(rows: &[TdsRow], elapsed_ms: u64, truncated: bool) -> QueryRes
     }
 }
 
+/// 열 정보를 따로 받는 [`rows_to_result`]. 행이 없는 결과셋도 열 이름을 알아야 할 때 쓴다
+/// (빈 페이지 · 조건에 맞는 행이 없는 SELECT).
+///
+/// API 서버 커서 결과는 **끝에 숨은 열 `ROWSTAT`**(행 상태)을 붙인다 — 페이지 결과에도, 커서를 열 때의
+/// 열 정보에도. 숨김 표시는 우리가 건너뛰는 COLINFO 토큰에 있어, 마지막 열이 `ROWSTAT` 이면 떼어 낸다.
+/// 사용자 열 이름이 우연히 `ROWSTAT` 이어도 서버가 그 뒤에 하나를 더 붙이므로 맨 끝 하나만 떼면 맞다.
+fn set_to_result(cols: &[Column], rows: &[TdsRow], truncated: bool) -> QueryResult {
+    let mut result = rows_to_result(rows, 0, truncated);
+    if result.columns.is_empty() {
+        result.columns = cols
+            .iter()
+            .map(|c| {
+                let ct = c.column_type();
+                ColumnMeta {
+                    name: c.name().to_string(),
+                    db_type: format!("{ct:?}"),
+                    logical_type: coltype_logical(ct),
+                }
+            })
+            .collect();
+    }
+    if result.columns.last().is_some_and(|c| c.name == ROWSTAT_COL) {
+        result.columns.pop();
+        for row in &mut result.rows {
+            row.pop();
+        }
+    }
+    result
+}
+
+/// 결과셋을 **열 정보와 함께** 모은다. `into_results` 는 행이 없는 결과셋의 열 정보를 남기지 않아,
+/// 빈 페이지에서 컬럼을 알 수 없게 된다.
+async fn collect_sets(mut stream: QueryStream<'_>) -> Result<Vec<(Vec<Column>, Vec<TdsRow>)>> {
+    let mut sets: Vec<(Vec<Column>, Vec<TdsRow>)> = Vec::new();
+    while let Some(item) = stream.try_next().await? {
+        match item {
+            QueryItem::Metadata(meta) => sets.push((meta.columns().to_vec(), Vec::new())),
+            QueryItem::Row(row) => match sets.last_mut() {
+                Some(set) => set.1.push(row),
+                None => sets.push((row.columns().to_vec(), vec![row])),
+            },
+        }
+    }
+    Ok(sets)
+}
+
+/// 서버 커서 핸들을 돌려받는 열 이름. 사용자 SELECT 의 열과 겹치지 않을 이름이다.
+const CURSOR_COL: &str = "__dbstudio_cursor";
+/// API 서버 커서 결과 끝에 서버가 붙이는 숨은 열(행 상태).
+const ROWSTAT_COL: &str = "ROWSTAT";
+
+/// 서버 커서를 닫는다. 이미 닫혔거나 연결이 끊겼으면 할 일이 없으니 오류는 삼킨다.
+async fn close_cursor_on(client: &mut TdsClient, cursor: i64) {
+    if let Ok(s) = client
+        .simple_query(format!("EXEC sp_cursorclose {cursor}"))
+        .await
+    {
+        let _ = s.into_results().await;
+    }
+}
+
 fn schema_or_default(table: &TableRef) -> String {
     table.schema.clone().unwrap_or_else(|| "dbo".to_string())
 }
@@ -349,6 +414,91 @@ impl MssqlDriver {
             self.simple_rows(&stmt).await?;
         }
         Ok(())
+    }
+
+    /// SELECT 한 문장을 API 서버 커서(`sp_cursoropen`)로 열고 첫 페이지를 읽는다
+    /// (docs/DESIGN.md §6-3 "결과 페이징").
+    ///
+    /// 커서는 **세션에** 남으므로 페이지 사이에 연결을 붙잡지 않는다 — 그 사이 그리드 같은 다른
+    /// 조회가 같은 연결에서 돌 수 있다. `FAST_FORWARD`·`READ_ONLY` 로 열어 결과 전체를 미리
+    /// 만들지 않는다(그래서 전체 행 수는 끝까지 읽어야 안다). 한 페이지로 끝나면 바로 닫는다.
+    async fn open_cursor(&self, sql: &str, page: usize) -> Result<ScriptResult> {
+        let start = Instant::now();
+        // 16 = FAST_FORWARD, 1 = READ_ONLY. 사용자 SQL 은 값으로 바인딩한다(@P1).
+        // 페이지 크기는 정수라 그대로 넣어도 안전하다.
+        let batch = format!(
+            "SET NOCOUNT ON; \
+             DECLARE @c INT, @opt INT = 16, @cc INT = 1, @n INT; \
+             EXEC sp_cursoropen @c OUTPUT, @P1, @opt OUTPUT, @cc OUTPUT, @n OUTPUT; \
+             SELECT @c AS [{CURSOR_COL}]; \
+             EXEC sp_cursorfetch @c, 2, 0, {page};"
+        );
+        let stmt = P::Str(sql.to_string());
+        let params: [&dyn ToSql; 1] = [&stmt];
+        let mut guard = self.client.lock().await;
+        let stream = guard.query(batch.as_str(), &params).await?;
+        let mut sets = collect_sets(stream).await?;
+
+        let at = sets
+            .iter()
+            .position(|(cols, _)| cols.first().is_some_and(|c| c.name() == CURSOR_COL))
+            .ok_or_else(|| AppError::Query("서버 커서를 열지 못했습니다".into()))?;
+        let handle = sets[at]
+            .1
+            .first()
+            .and_then(|r| r.try_get::<i32, _>(0).ok().flatten())
+            .map(i64::from)
+            .ok_or_else(|| AppError::Query("서버 커서 핸들을 받지 못했습니다".into()))?;
+        // 커서를 열 때 오는 첫 결과셋은 행 없이 열 정보만 담는다 — 첫 페이지가 비었을 때 쓴다.
+        let meta_cols = sets[..at]
+            .last()
+            .map(|(c, _)| c.clone())
+            .unwrap_or_default();
+        let (cols, rows) = if sets.len() > at + 1 {
+            sets.swap_remove(at + 1)
+        } else {
+            (meta_cols, Vec::new())
+        };
+
+        let done = rows.len() < page;
+        if done {
+            close_cursor_on(&mut guard, handle).await;
+        }
+        drop(guard);
+
+        let mut result = set_to_result(&cols, &rows, !done);
+        result.elapsed_ms = start.elapsed().as_millis() as u64;
+        Ok(ScriptResult {
+            results: vec![result],
+            elapsed_ms: start.elapsed().as_millis() as u64,
+            cursors: vec![(!done).then_some(handle)],
+            ..Default::default()
+        })
+    }
+
+    /// SELECT 문장들을 하나씩 서버 커서로 연다(결과마다 따로 페이지를 넘긴다).
+    ///
+    /// 하나라도 열지 못하면(커서가 받지 않는 SELECT · 구문 오류) 이미 연 커서를 닫고 `None` —
+    /// 그러면 호출 쪽이 스크립트를 한 번에 실행한다. 조회뿐이라 다시 돌려도 결과는 같다.
+    async fn open_cursors(&self, stmts: &[&str], page: usize) -> Option<ScriptResult> {
+        let start = Instant::now();
+        let mut out = ScriptResult::default();
+        for stmt in stmts {
+            match self.open_cursor(stmt, page).await {
+                Ok(mut r) => {
+                    out.results.append(&mut r.results);
+                    out.cursors.append(&mut r.cursors);
+                }
+                Err(_) => {
+                    for c in out.cursors.iter().flatten() {
+                        let _ = Driver::close_cursor(self, *c).await;
+                    }
+                    return None;
+                }
+            }
+        }
+        out.elapsed_ms = start.elapsed().as_millis() as u64;
+        Some(out)
     }
 
     async fn simple_rows(&self, sql: &str) -> Result<Vec<TdsRow>> {
@@ -842,6 +992,21 @@ impl Driver for MssqlDriver {
         self.apply_ctx(ctx).await?;
 
         let batches = script::split_batches(sql);
+        // SELECT 로만 이뤄졌으면 문장마다 서버 커서로 열어 첫 페이지만 받는다 — 나머지는 페이지를
+        // 넘길 때 `fetch_cursor` 로 이어 읽으므로 결과가 커도 서버가 끝까지 보내지 않는다.
+        // 다른 문장이 섞였으면(변수·임시 테이블이 이어져야 한다) 아래에서 한 번에 실행한다.
+        if !opts.capture_changes {
+            let stmts: Option<Vec<&str>> = batches
+                .iter()
+                .map(|b| script::split_selects(b))
+                .collect::<Option<Vec<_>>>()
+                .map(|v| v.concat());
+            if let Some(stmts) = stmts {
+                if let Some(res) = self.open_cursors(&stmts, opts.max_rows).await {
+                    return Ok(res);
+                }
+            }
+        }
         let mut out = ScriptResult::default();
         let mut guard = self.client.lock().await;
 
@@ -922,6 +1087,39 @@ impl Driver for MssqlDriver {
         DIALECT
     }
 
+    async fn fetch_cursor(&self, cursor: i64, max_rows: usize) -> Result<CursorPage> {
+        let mut guard = self.client.lock().await;
+        let sql = format!("SET NOCOUNT ON; EXEC sp_cursorfetch {cursor}, 2, 0, {max_rows};");
+        // 결과를 먼저 확정해 스트림의 빌림을 끊는다(그래야 끊긴 연결을 guard 째 바꿀 수 있다).
+        let sets = match guard.simple_query(sql).await {
+            Ok(s) => Some(collect_sets(s).await?),
+            Err(e) if is_connection_lost(&e) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let Some(sets) = sets else {
+            // 세션이 바뀌면 커서도 사라진다. 다음 작업을 위해 연결만 되살리고 알린다.
+            *guard = Self::open(&self.config).await?;
+            return Err(AppError::Connection(
+                "연결이 끊겨 열어 둔 결과가 닫혔습니다. 다시 실행하세요".into(),
+            ));
+        };
+        let (cols, rows) = sets.into_iter().last().unwrap_or_default();
+        let done = rows.len() < max_rows;
+        if done {
+            close_cursor_on(&mut guard, cursor).await;
+        }
+        Ok(CursorPage {
+            result: set_to_result(&cols, &rows, !done),
+            done,
+        })
+    }
+
+    async fn close_cursor(&self, cursor: i64) -> Result<()> {
+        let mut guard = self.client.lock().await;
+        close_cursor_on(&mut guard, cursor).await;
+        Ok(())
+    }
+
     async fn run_execute(&self, sql: &str, ctx: &ExecContext) -> Result<ExecResult> {
         self.apply_ctx(ctx).await?;
         let start = Instant::now();
@@ -951,6 +1149,14 @@ impl Driver for MssqlDriver {
 /// `DBSTUDIO_MSSQL_TEST=1 cargo test --lib mssql -- --ignored --nocapture` 로 실행한다.
 #[cfg(test)]
 mod tests {
+
+    /// 이 모듈의 통합 테스트를 한 번에 하나씩 돌게 하는 잠금.
+    ///
+    /// 거의 모든 테스트가 같은 서버(`master` 등)에서 테이블을 만들고 지우고, 일부는 그 사이
+    /// 카탈로그(INFORMATION_SCHEMA)를 읽는다. 병렬로 돌리면 서로 엇갈려 교착(1205)으로 무작위
+    /// 실패한다 — 코드 문제가 아니라 테스트끼리의 간섭이다(2026-09-11 이 잠금을 넣기 전 커밋
+    /// `5f1f660` 에서도 세 번 중 한 번 재현). 전체가 몇 초라 차례로 돌아도 부담이 없다.
+    static DDL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// 행 수 제한만 지정한 스크립트 옵션(변경 행 보기는 끔).
     fn opts(max_rows: usize) -> ScriptOptions {
@@ -993,6 +1199,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn where_filter_string_literal_both_paths() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
 
         d.simple_rows("IF OBJECT_ID('dbo.con_test') IS NOT NULL DROP TABLE dbo.con_test")
@@ -1056,6 +1263,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn apply_changes_commits_without_leaking_transaction() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.tx_test') IS NOT NULL DROP TABLE dbo.tx_test")
             .await
@@ -1105,6 +1313,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn set_primary_key_on_table_without_pk() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.pk_test') IS NOT NULL DROP TABLE dbo.pk_test")
             .await
@@ -1143,6 +1352,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn primary_key_blocked_by_data() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.pk_bad') IS NOT NULL DROP TABLE dbo.pk_bad")
             .await
@@ -1187,6 +1397,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn smart_quote_breaks_query() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.con_test2') IS NOT NULL DROP TABLE dbo.con_test2")
             .await
@@ -1249,6 +1460,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn alter_column_type_default_and_rename() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.alt_test') IS NOT NULL DROP TABLE dbo.alt_test")
             .await
@@ -1411,6 +1623,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn alter_column_blocked_by_data_and_name_clash() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.alt_bad') IS NOT NULL DROP TABLE dbo.alt_bad")
             .await
@@ -1475,6 +1688,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn edit_without_pk_rolls_back_without_leaking_transaction() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.nopk_test') IS NOT NULL DROP TABLE dbo.nopk_test")
             .await
@@ -1535,6 +1749,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn schema_snapshot_reads_catalog() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         for sql in ["IF DB_ID('snap_demo') IS NULL CREATE DATABASE snap_demo"] {
             d.simple_rows(sql).await.expect("db");
@@ -1572,6 +1787,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn run_script_returns_every_result_set() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.ms_test') IS NOT NULL DROP TABLE dbo.ms_test")
             .await
@@ -1605,6 +1821,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn run_script_splits_go_batches_and_counts_writes() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.go_test') IS NOT NULL DROP TABLE dbo.go_test")
             .await
@@ -1638,6 +1855,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn capture_changes_returns_before_and_after_values() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         d.simple_rows("IF OBJECT_ID('dbo.chg_test') IS NOT NULL DROP TABLE dbo.chg_test")
             .await
@@ -1707,6 +1925,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn keepalive_keeps_same_session() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         // @@SPID 는 smallint 다.
         let spid = |rows: &[TdsRow]| rows[0].try_get::<i16, _>("n").unwrap().unwrap();
@@ -1728,6 +1947,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn relations_both_directions() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         for sql in [
             "IF OBJECT_ID('dbo.rel_emp') IS NOT NULL DROP TABLE dbo.rel_emp",
@@ -1782,6 +2002,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn korean_text_by_collation_and_n_prefix() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         let cell = |r: &QueryResult, name: &str, row: usize| -> String {
             let i = r.columns.iter().position(|c| c.name == name).expect("컬럼");
@@ -1873,6 +2094,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn undecodable_bytes_become_replacement_char() {
+        let _ddl = DDL_LOCK.lock().await;
         let d = MssqlDriver::connect(&test_config()).await.expect("연결");
         // CAST 결과는 **실행 중인 DB 의 기본 collation** 을 따른다. 기본 collation 이 다른 DB 에서
         // 넣으면 코드페이지 변환을 거치며 바이트가 바뀌어 재현이 안 되므로, 그 DB 안에서 실행한다.
@@ -1933,5 +2155,174 @@ mod tests {
             .await
             .expect("그리드 조회");
         assert_eq!(page.result.rows.len(), 2);
+    }
+
+    /// 콘솔 결과 페이징: SELECT 한 문장은 서버 커서로 열고, 다음 페이지는 **이어 읽는다**.
+    ///
+    /// 커서는 세션에 남으므로 페이지 사이에 같은 연결로 다른 조회가 돌아도 살아 있어야 한다.
+    /// 여러 문장·쓰기·커서가 받지 않는 SELECT 는 커서를 열지 않고 지금처럼 한 번에 받는다.
+    #[tokio::test]
+    #[ignore]
+    async fn select_pages_through_server_cursor() {
+        let _ddl = DDL_LOCK.lock().await;
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        // 전용 DB 에서 만든다. master 에서 만들면 열어 둔 커서의 스키마 잠금이 다른 테스트의
+        // DDL·카탈로그 조회와 엇갈려 교착(1205)이 난다.
+        for sql in [
+            "IF DB_ID('page_demo') IS NULL CREATE DATABASE page_demo",
+            "IF OBJECT_ID('page_demo.dbo.page_t') IS NOT NULL DROP TABLE page_demo.dbo.page_t",
+            "CREATE TABLE page_demo.dbo.page_t (id INT PRIMARY KEY, v NVARCHAR(10))",
+            "INSERT INTO page_demo.dbo.page_t VALUES \
+             (1,N'a'),(2,N'b'),(3,N'c'),(4,N'd'),(5,N'e'),(6,N'f'),(7,N'g')",
+        ] {
+            d.simple_rows(sql).await.expect("준비");
+        }
+        let ctx = ExecContext::default();
+        let ids = |r: &QueryResult| -> Vec<i64> {
+            r.rows
+                .iter()
+                .map(|row| row[0].as_i64().expect("id"))
+                .collect()
+        };
+
+        // 첫 페이지: 3행만 받고 커서가 열린다.
+        let r = d
+            .run_script(
+                "SELECT id, v FROM page_demo.dbo.page_t ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("열기");
+        let cur = r.cursors[0].expect("커서가 열려야 한다");
+        assert_eq!(ids(&r.results[0]), vec![1, 2, 3]);
+        assert!(r.results[0].truncated, "다음 페이지가 있다고 알려야 한다");
+        // sp_cursorfetch 가 붙이는 숨은 열(ROWSTAT)은 보이면 안 된다 — 이름과 값 모두.
+        let names =
+            |r: &QueryResult| -> Vec<String> { r.columns.iter().map(|c| c.name.clone()).collect() };
+        assert_eq!(names(&r.results[0]), vec!["id", "v"], "숨은 열이 보인다");
+        assert!(r.results[0].rows.iter().all(|row| row.len() == 2));
+
+        // 페이지 사이에 같은 연결로 다른 조회가 돌아도 커서는 살아 있다.
+        d.simple_rows("SELECT COUNT(*) AS n FROM page_demo.dbo.page_t")
+            .await
+            .expect("다른 조회");
+
+        let p2 = d.fetch_cursor(cur, 3).await.expect("2쪽");
+        assert_eq!(ids(&p2.result), vec![4, 5, 6]);
+        assert_eq!(
+            names(&p2.result),
+            vec!["id", "v"],
+            "다음 페이지에 숨은 열이 보인다"
+        );
+        assert!(p2.result.rows.iter().all(|row| row.len() == 2));
+        assert!(!p2.done);
+        let p3 = d.fetch_cursor(cur, 3).await.expect("3쪽");
+        assert_eq!(ids(&p3.result), vec![7]);
+        assert!(p3.done, "모자라게 오면 끝이다");
+        // 끝까지 읽으면 서버가 이미 닫았다 — 다시 읽으면 오류.
+        assert!(d.fetch_cursor(cur, 3).await.is_err(), "닫힌 커서를 읽었다");
+
+        // 딱 떨어지면 빈 페이지에서 끝을 안다. 빈 페이지에도 열 이름은 남는다.
+        let r = d
+            .run_script(
+                "SELECT id FROM page_demo.dbo.page_t WHERE id <= 6 ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("열기");
+        let cur = r.cursors[0].expect("커서");
+        assert!(!d.fetch_cursor(cur, 3).await.expect("2쪽").done);
+        let last = d.fetch_cursor(cur, 3).await.expect("빈 쪽");
+        assert!(last.done && last.result.rows.is_empty());
+
+        // 한 페이지로 끝나면 커서를 남기지 않는다. 행이 없어도 열 이름은 알아야 한다.
+        let empty = d
+            .run_script(
+                "SELECT id, v FROM page_demo.dbo.page_t WHERE 1 = 0",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("빈 결과");
+        assert!(empty.cursors.iter().all(Option::is_none));
+        let names: Vec<_> = empty.results[0]
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["id", "v"], "빈 결과에서 열 이름을 잃었다");
+
+        // 닫기.
+        let r = d
+            .run_script(
+                "SELECT id FROM page_demo.dbo.page_t ORDER BY id",
+                &opts(2),
+                &ctx,
+            )
+            .await
+            .expect("열기");
+        let cur = r.cursors[0].expect("커서");
+        d.close_cursor(cur).await.expect("닫기");
+        assert!(d.fetch_cursor(cur, 2).await.is_err(), "닫은 커서를 읽었다");
+
+        // 여러 문장·커서가 받지 않는 SELECT 는 지금처럼 한 번에 받는다.
+        let multi = d
+            .run_script("SELECT 1 AS a; SELECT 2 AS b", &opts(3), &ctx)
+            .await
+            .expect("여러 문장");
+        // 둘 다 한 페이지로 끝나 커서가 남지 않는다.
+        assert!(multi.cursors.iter().all(Option::is_none));
+        assert_eq!(multi.results.len(), 2);
+        let json = d
+            .run_script(
+                "SELECT id FROM page_demo.dbo.page_t FOR JSON PATH",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("FOR JSON");
+        assert!(json.cursors.iter().all(Option::is_none));
+        assert_eq!(json.results.len(), 1);
+
+        // SELECT 로만 이뤄진 스크립트는 문장마다 따로 커서를 연다 — 결과마다 페이지를 넘긴다.
+        // 문자열·주석 안의 `;` 는 문장 경계가 아니다.
+        let two = d
+            .run_script(
+                "SELECT id FROM page_demo.dbo.page_t ORDER BY id; -- 주석;\n\
+                 SELECT v, ';' AS s FROM page_demo.dbo.page_t ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("두 SELECT");
+        assert_eq!(two.results.len(), 2);
+        let c1 = two.cursors[0].expect("첫 결과의 커서");
+        let c2 = two.cursors[1].expect("둘째 결과의 커서");
+        assert_eq!(
+            ids(&d.fetch_cursor(c1, 3).await.expect("첫 결과 2쪽").result),
+            vec![4, 5, 6]
+        );
+        let v2 = d.fetch_cursor(c2, 3).await.expect("둘째 결과 2쪽");
+        assert_eq!(v2.result.rows[0][0], serde_json::json!("d"));
+        d.close_cursor(c1).await.expect("닫기");
+        d.close_cursor(c2).await.expect("닫기");
+
+        // 다른 문장이 섞이면 한 번에 실행한다 — 변수가 다음 문장으로 이어져야 한다.
+        let mixed = d
+            .run_script(
+                "DECLARE @x INT = 2; SELECT id FROM page_demo.dbo.page_t WHERE id > @x ORDER BY id",
+                &opts(3),
+                &ctx,
+            )
+            .await
+            .expect("섞인 스크립트");
+        assert!(mixed.cursors.iter().all(Option::is_none));
+        assert_eq!(ids(&mixed.results[0]), vec![3, 4, 5]);
+        assert!(
+            mixed.results[0].truncated,
+            "행 제한에서 잘렸다고 알려야 한다"
+        );
     }
 }

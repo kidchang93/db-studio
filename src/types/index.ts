@@ -228,6 +228,18 @@ export interface ScriptResult {
   elapsedMs: number;
   /** 실제로 서버에 나간 SQL. 원문과 다를 때만 채워진다(OUTPUT/RETURNING 삽입). */
   sql: string[];
+  /**
+   * 결과셋마다 연 서버 커서(`results` 와 같은 순서). 다음 페이지를 `fetchCursor` 로 이어 읽는다.
+   * SELECT 로만 이뤄진 실행이고 한 페이지로 끝나지 않은 결과만 값이 있다.
+   */
+  cursors?: (number | null)[];
+}
+
+/** 서버 커서에서 이어 읽은 한 페이지 (Rust: CursorPage). */
+export interface CursorPage {
+  result: QueryResult;
+  /** 끝까지 읽었는지. 그러면 서버 커서는 이미 닫혔다. */
+  done: boolean;
 }
 
 /** 스크립트 실행 옵션 (Rust: ScriptOptions). */

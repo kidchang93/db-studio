@@ -291,6 +291,21 @@ pub struct ScriptResult {
     /// 우리가 사용자 SQL 을 고쳐 보냈다면 무엇이 실행됐는지 확인할 수 있어야 한다.
     #[serde(default)]
     pub sql: Vec<String>,
+    /// 결과셋마다 연 서버 커서(`results` 와 같은 순서). 다음 페이지를 `fetch_cursor` 로 이어 읽는다.
+    ///
+    /// SELECT 로만 이뤄진 실행이고 한 페이지로 끝나지 않은 결과만 `Some` 이다. 한 번에 실행한
+    /// 스크립트(다른 종류 문장이 섞임)는 비어 있다(docs/DESIGN.md §6-3).
+    #[serde(default)]
+    pub cursors: Vec<Option<i64>>,
+}
+
+/// 서버 커서에서 이어 읽은 한 페이지(콘솔 결과 페이징).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorPage {
+    pub result: QueryResult,
+    /// 끝까지 읽었는지. 그러면 서버 커서는 이미 닫혔다.
+    pub done: bool,
 }
 
 /// 자동완성용 스키마 스냅샷 한 줄 — 테이블 하나와 그 컬럼 이름들.
