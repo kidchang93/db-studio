@@ -64,6 +64,7 @@
 | `db/script.rs` | 스크립트 텍스트 훑기: SQL Server `GO` 배치 분리, 결과셋 여부 판정, 변경 행 반환 절(`OUTPUT`/`RETURNING`) 삽입 |
 | `db/value.rs` | DB 네이티브 값 ↔ `serde_json::Value` 변환 (컬럼 타입 → 논리 타입 매핑), 바인딩 매크로 |
 | `db/{postgres,mysql,sqlite,mssql}.rs` | 드라이버별 구현 |
+| `vendor/tiberius/` | tiberius 패치 사본(`Cargo.toml` 의 `[patch.crates-io]`). 코드페이지 디코딩 실패로 결과셋 전체가 버려지던 것을 대체 문자로 바꾼다(`DESIGN.md` §4). 변경점은 그 `Cargo.toml` 머리말에 적고, 업스트림을 올릴 때 다시 적용한다 |
 
 ## 3. 레이어와 의존성 방향
 

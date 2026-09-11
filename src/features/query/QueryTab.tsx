@@ -28,6 +28,7 @@ import {
   type SqlErrorSpot,
 } from "../../lib/sqlText";
 import { Modal } from "../../components/Modal";
+import { CopyButton } from "../../components/CopyButton";
 
 /** 히스토리에 남길 오류 요약 — 첫 줄만 짧게. */
 function errorLine(e: unknown): string {
@@ -167,7 +168,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
       });
     }
     addHistory({ sql: text, connName, ok: false, error: message });
-    ui.toastError(e, title);
+    ui.toastError(e, title, text);
   }
 
   // DB 목록은 탭이 열릴 때 한 번 읽는다.
@@ -467,6 +468,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
                       </button>
                     )}
                     <span className="spacer" />
+                    <CopyButton text={sqlError.message} title="오류 문구 복사" />
                     <button
                       className="btn icon"
                       title="닫기"

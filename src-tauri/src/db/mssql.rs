@@ -1864,4 +1864,74 @@ mod tests {
             );
         }
     }
+
+    /// 코드페이지로 풀 수 없는 바이트가 섞인 값이 있어도 조회가 되어야 한다.
+    ///
+    /// 운영 DB(Korean_Wansung)의 `varchar` 한 칸에 0x80 — cp949 에 없는 바이트 — 이 있었는데,
+    /// tiberius 가 그 값 하나 때문에 결과셋 전체를 "Encoding error: invalid sequence" 로 버려
+    /// 테이블을 열 수조차 없었다. 벤더링한 tiberius(`vendor/tiberius`)가 U+FFFD 로 바꾼다.
+    #[tokio::test]
+    #[ignore]
+    async fn undecodable_bytes_become_replacement_char() {
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        // CAST 결과는 **실행 중인 DB 의 기본 collation** 을 따른다. 기본 collation 이 다른 DB 에서
+        // 넣으면 코드페이지 변환을 거치며 바이트가 바뀌어 재현이 안 되므로, 그 DB 안에서 실행한다.
+        for sql in [
+            "IF DB_ID('enc_demo') IS NULL CREATE DATABASE enc_demo COLLATE Korean_Wansung_CI_AS",
+            "IF OBJECT_ID('enc_demo.dbo.bad_bytes') IS NOT NULL DROP TABLE enc_demo.dbo.bad_bytes",
+            "CREATE TABLE enc_demo.dbo.bad_bytes (id INT PRIMARY KEY, v VARCHAR(50), t TEXT)",
+            // 0xB0A1 = '가', 뒤의 0x80 은 cp949 에 없는 바이트.
+            "EXEC enc_demo.sys.sp_executesql N'INSERT INTO dbo.bad_bytes VALUES \
+             (1, CAST(0xB0A180 AS VARCHAR(50)), CAST(0xB0A180 AS VARCHAR(50))), \
+             (2, N''정상'', N''정상'')'",
+        ] {
+            d.simple_rows(sql).await.expect("준비");
+        }
+        let raw = d
+            .run_query(
+                "SELECT CAST(v AS VARBINARY(50)) AS b FROM enc_demo.dbo.bad_bytes WHERE id = 1",
+                1,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("바이트 확인");
+        assert_eq!(
+            raw.rows[0][0],
+            serde_json::json!("0xb0a180"),
+            "재현용 바이트가 그대로 들어가지 않았다"
+        );
+
+        // 콘솔 경로(simple_query).
+        let r = d
+            .run_query(
+                "SELECT id, v, t FROM enc_demo.dbo.bad_bytes ORDER BY id",
+                10,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("깨진 값이 있어도 조회는 되어야 한다");
+        assert_eq!(r.rows.len(), 2, "한 칸 때문에 다른 행까지 사라지면 안 된다");
+        assert_eq!(r.rows[0][1], serde_json::json!("가\u{FFFD}"));
+        assert_eq!(r.rows[0][2], serde_json::json!("가\u{FFFD}"), "text 컬럼");
+        assert_eq!(r.rows[1][1], serde_json::json!("정상"));
+
+        // 그리드 경로(fetch_page — sp_executesql).
+        let page = d
+            .fetch_page(&FetchPageRequest {
+                conn_id: "t".into(),
+                filter_sql: None,
+                table: TableRef {
+                    database: Some("enc_demo".into()),
+                    schema: Some("dbo".into()),
+                    name: "bad_bytes".into(),
+                },
+                limit: 200,
+                offset: 0,
+                sort: vec![],
+                filters: vec![],
+            })
+            .await
+            .expect("그리드 조회");
+        assert_eq!(page.result.rows.len(), 2);
+    }
 }

@@ -15,7 +15,8 @@ interface UiState {
   theme: "dark" | "light";
   pushToast: (t: Omit<Toast, "id">) => void;
   dismissToast: (id: string) => void;
-  toastError: (err: unknown, title?: string) => void;
+  /** `sql` 을 주면 로그 항목에 함께 남는다(무엇을 실행하다 실패했는지). */
+  toastError: (err: unknown, title?: string, sql?: string) => void;
   setStatus: (s: string) => void;
   toggleTheme: () => void;
 }
@@ -35,13 +36,13 @@ export const useUiStore = create<UiState>()((set, get) => ({
   dismissToast: (id) =>
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
-  toastError: (err, title = "오류") => {
+  toastError: (err, title = "오류", sql) => {
     const message = errorMessage(err);
     get().pushToast({ kind: "error", title, message });
     set({ status: `오류: ${message}` });
     // 토스트는 5초 뒤 사라진다. 오류만큼은 되짚을 수 있어야 하므로 로그에도 남긴다.
     // 모든 오류가 이 함수를 지나므로 여기 한 곳이면 빠짐없이 기록된다.
-    useLogStore.getState().add({ kind: "error", label: title, detail: message });
+    useLogStore.getState().add({ kind: "error", label: title, detail: message, sql });
   },
 
   setStatus: (status) => set({ status }),

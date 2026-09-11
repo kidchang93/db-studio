@@ -56,3 +56,10 @@ rust_decimal = { version = "1.42.1", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tauri-plugin-dialog = "2.7.2"
 
+# tiberius 는 코드페이지로 풀 수 없는 바이트가 **한 칸이라도** 있으면 결과셋 전체를
+# "Encoding error: invalid sequence" 로 버린다. 운영 DB 의 레거시 데이터 한 칸 때문에
+# 테이블을 열 수 없어서, 대체 문자(U+FFFD)로 바꾸도록 패치한 사본을 쓴다.
+# 변경 내역은 `vendor/tiberius/Cargo.toml` 머리말, 근거는 `docs/DESIGN.md` §4.
+[patch.crates-io]
+tiberius = { path = "vendor/tiberius" }
+

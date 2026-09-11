@@ -8,7 +8,7 @@ DataGrip 스타일의 크로스플랫폼 데스크톱 DB 클라이언트. 스키
 |------|------|
 | 셸/번들 | Tauri v2 (Rust) — Windows `.msi`/`.exe`, macOS `.dmg`/`.app` |
 | 백엔드 | Rust (tokio async), Tauri command IPC |
-| DB 드라이버 | `sqlx`(PostgreSQL·MySQL·SQLite) + `tiberius`(SQL Server) |
+| DB 드라이버 | `sqlx`(PostgreSQL·MySQL·SQLite) + `tiberius`(SQL Server — 패치 사본 `src-tauri/vendor/tiberius`, `docs/DESIGN.md` §4) |
 | 프론트엔드 | React 19 + TypeScript + Vite 7 |
 | 상태관리 | zustand |
 | 데이터 그리드 | `@tanstack/react-table` + `@tanstack/react-virtual` (가상 스크롤) |

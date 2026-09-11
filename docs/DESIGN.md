@@ -32,6 +32,10 @@
 - DB 네이티브 타입을 **논리 타입** 집합으로 정규화: `null · bool · int · float · decimal · string · bytes · date · time · datetime · json · uuid · array`.
 - 프론트로는 `serde_json::Value`로 보내되, 컬럼 메타에 원본 DB 타입명(`db_type`)과 논리 타입(`logical_type`)을 함께 실어 그리드 렌더링·편집기 선택에 사용.
 - 정밀도 손실 위험(`NUMERIC`, `BIGINT`, `bytea`, `uuid`, 시간대)은 **문자열로 보존**하는 것을 기본으로 한다. JS `number`로 내려 정밀도를 잃지 않는다.
+- **코드페이지로 풀 수 없는 바이트는 U+FFFD(`�`)로 바꿔 보여 준다(SQL Server).** tiberius 원본은 `varchar`·`char`·`text` 값 **한 칸이라도** 디코딩에 실패하면 `Encoding error: invalid sequence` 로 결과셋 전체를 버린다. 운영 DB(Korean_Wansung) 한 행에 cp949 에 없는 바이트(0x80)가 있다는 이유로 178행짜리 테이블을 그리드로도 콘솔로도 열 수 없었다. SSMS·JDBC 처럼 대체 문자로 보여 주도록 `src-tauri/vendor/tiberius` 에 패치한 사본을 쓴다(`[patch.crates-io]`, 변경점은 그 `Cargo.toml` 머리말). `nvarchar`·`ntext` 의 짝 없는 서로게이트도 같은 규칙이다.
+  - 대체된 값은 **그 셀을 직접 고치지 않는 한 DB 에 다시 쓰이지 않는다** — `UPDATE` 는 바꾼 컬럼만 `SET` 한다. PK 없는 테이블에서 이 값이 WHERE 에 들어가 행을 못 찾으면 `ensure_single_row` 가 커밋을 취소한다(§5).
+  - 원본 바이트를 봐야 하면 콘솔에서 `CAST(col AS VARBINARY(MAX))` 로 본다.
+  - 회귀 테스트: `db/mssql.rs` 의 `undecodable_bytes_become_replacement_char`.
 
 ## 5. SQL 안전성 (필수)
 
@@ -180,6 +184,8 @@ sqlx 쪽(PG·MySQL·SQLite)은 `fetch_many` 가 결과셋과 행 수를 한 스�
 - **왜 필요한가**: 토스트는 5초 뒤 사라지고 상태바는 마지막 한 줄만 남아, 무슨 일이 있었는지 되짚을 방법이 없었다. 특히 **그리드 커밋은 백엔드가 문장을 만들기 때문에** 사용자가 무엇이 실행됐는지 알 길이 아예 없었다.
 - 남기는 것: 조회 · 실행 · 커밋 · 오류. 항목을 클릭하면 실제로 나간 SQL 이 펼쳐진다. 최근 300건만 메모리에 둔다.
 - **오류는 `uiStore.toastError` 한 곳에서 기록한다.** 모든 오류가 그 함수를 지나므로 기록 지점을 흩뿌리지 않아도 빠짐없이 남는다.
+- **오류 항목도 펼쳐 전문을 본다.** 목록 한 줄에서는 메시지가 잘려 원인을 읽을 수 없다. 오류 행만은 SQL 이 아니라 **메시지를 앞에** 세운다(무엇이 왜 실패했는지가 먼저). SQL 콘솔의 오류는 실행한 SQL 도 함께 싣는다(`toastError` 의 세 번째 인자) — 결과를 받는 도중에 난 서버 오류에는 백엔드가 SQL 을 붙이지 않는다.
+- **오류 문구·SQL·변경 내역은 선택·복사할 수 있어야 한다.** 앱 전역이 `user-select: none` 이라(드래그가 버튼·그리드 글자를 긁지 않게) 오류 원문을 옮길 수 없어 스크린샷으로 전달해야 했다. 이런 텍스트만 선택을 풀고(`global.css` "옮겨 적어야 하는 텍스트"), 콘솔 오류 배너·오류 토스트·펼친 로그 항목에 복사 버튼(`components/CopyButton`)을 단다. 옮겨 적어야 하는 텍스트를 새로 만들면 같은 규칙을 따른다.
 - **커밋 SQL 은 응답(`ApplyChangesResult::statements`)에 실어 보낸다** — 드라이버가 `AppHandle` 을 들고 이벤트를 쏘게 하면 "`db/` 는 위 계층을 모른다"는 의존성 규칙(`ARCHITECTURE.md` §3)이 깨진다. 타입 계약을 넓히는 쪽이 레이어를 지키는 길이다.
 - **SQL 문형에는 값을 담지 않는다.** 파라미터 바인딩이라 문형만 남는다. 회귀 테스트(`db/sqlite.rs` 의 `crud_roundtrip`)가 값이 섞이지 않는지 확인한다 — 이건 로그 표시 규칙이 아니라 **SQL 주입 안전성**을 지키는 선이다.
 - **행 단위 변경 내역(`LogEntry.changes`)에는 값을 담는다.** 무엇이 바뀌었는지 확인하는 것이 이 패널의 목적이고, 값이 없으면 목적을 이룰 수 없다. 그리드 커밋은 프론트가 pending 편집에서 이전/이후 값을 그대로 모아 넘긴다(커밋에 성공하면 화면이 새 값으로 덮여, 그때 모으지 않으면 이전 값을 다시 볼 방법이 없다). 삭제는 되살릴 수 있도록 **모든 컬럼**을 남긴다.

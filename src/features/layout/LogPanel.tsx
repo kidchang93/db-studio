@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Trash2, X } from "lucide-react";
+import { CopyButton } from "../../components/CopyButton";
 import { useLogStore, type LogChange, type LogEntry, type LogKind } from "../../store/logStore";
 import type { Cell } from "../../types";
 
@@ -75,37 +76,42 @@ function Row({ entry }: { entry: LogEntry }) {
   const [open, setOpen] = useState(false);
   const sql = entry.sql?.trim();
   const statements = sql ? sql.split("\n").filter((l) => l.trim()) : [];
+  // 오류는 메시지 전문이 곧 내용이다. 한 줄 요약에서는 잘려 원인을 읽을 수 없다.
+  const errorText = entry.kind === "error" ? entry.detail : undefined;
 
   /**
    * 목록의 주 텍스트는 **SQL 그 자체**다.
    *
    * "문장 실행" 같은 라벨은 왼쪽 종류 배지와 겹쳐서, 그걸 보여 주면 정작 무엇이
    * 실행됐는지는 펼쳐야만 알 수 있다. 로그를 여는 이유가 바로 그것이므로 앞에 세운다.
+   * 오류만은 **왜 실패했는지**가 먼저라 메시지를 앞에 세운다(SQL 은 펼치면 보인다).
    */
-  const preview =
-    statements.length > 1
+  const preview = errorText
+    ? `${entry.label} — ${oneLine(errorText)}`
+    : statements.length > 1
       ? `${statements.length}개 문장 — ${oneLine(statements[0])}`
       : sql
         ? oneLine(sql)
         : entry.label;
 
   const changes = entry.changes ?? [];
-  const expandable = Boolean(sql) || changes.length > 0;
+  const expandable = Boolean(sql) || changes.length > 0 || Boolean(errorText);
+  const copyText = [errorText, sql].filter(Boolean).join("\n\n");
 
   return (
     <div className="log-row" data-kind={entry.kind}>
       <button
         className="log-head"
         onClick={() => expandable && setOpen((v) => !v)}
-        title={expandable ? "클릭하면 변경 내역과 SQL 전문 보기" : undefined}
+        title={expandable ? "클릭하면 전문 보기" : undefined}
         style={{ cursor: expandable ? "pointer" : "default" }}
       >
         <span className="mono muted">{timeOf(entry.ts)}</span>
         <span className="log-kind" style={{ color: KIND_COLOR[entry.kind] }}>
           {KIND_LABEL[entry.kind]}
         </span>
-        <span className={`log-label${sql ? " mono" : ""}`}>{preview}</span>
-        {entry.detail && <span className="muted log-detail">{entry.detail}</span>}
+        <span className={`log-label${sql && !errorText ? " mono" : ""}`}>{preview}</span>
+        {entry.detail && !errorText && <span className="muted log-detail">{entry.detail}</span>}
         {changes.length > 0 && (
           <span className="muted log-detail">변경 {changes.length}행</span>
         )}
@@ -113,9 +119,19 @@ function Row({ entry }: { entry: LogEntry }) {
           <span className="muted mono log-ms">{entry.elapsedMs}ms</span>
         )}
       </button>
-      {/* 무엇이 바뀌었는지가 먼저다. SQL 전문은 그 아래에 둔다. */}
-      {open && changes.length > 0 && <Changes changes={changes} />}
-      {open && sql && <pre className="log-sql mono">{sql}</pre>}
+      {open && (
+        <>
+          {copyText && (
+            <div className="log-copy">
+              <CopyButton text={copyText} title={errorText ? "오류 문구와 SQL 복사" : "SQL 복사"} />
+            </div>
+          )}
+          {errorText && <pre className="log-error mono">{errorText}</pre>}
+          {/* 무엇이 바뀌었는지가 먼저다. SQL 전문은 그 아래에 둔다. */}
+          {changes.length > 0 && <Changes changes={changes} />}
+          {sql && <pre className="log-sql mono">{sql}</pre>}
+        </>
+      )}
     </div>
   );
 }

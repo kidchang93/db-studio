@@ -1501,6 +1501,38 @@ table.grid tbody tr.selected td {
   overflow: auto;
 }
 
+/* ===== 옮겨 적어야 하는 텍스트 =====
+   body 가 user-select: none 이라(드래그가 버튼·그리드 글자를 긁지 않게) 오류 문구와 SQL 까지
+   선택되지 않아 원문을 옮길 수 없었다. 이런 텍스트만 선택을 푼다(docs/DESIGN.md §6-4). */
+.sql-error-msg,
+.toast-msg,
+.log-error,
+.log-sql,
+.log-changes {
+  user-select: text;
+  cursor: text;
+}
+.toast-msg {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+/* 펼친 로그 항목의 복사 버튼 줄. */
+.log-copy {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 6px 0;
+}
+.log-error {
+  margin: 0;
+  padding: 0 10px 6px 46px;
+  font-size: 12px;
+  color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 콘솔 툴바의 컨텍스트 선택 — 툴바 높이에 맞춘 작은 select. */
 .select.sm {
   padding: 2px 4px;
