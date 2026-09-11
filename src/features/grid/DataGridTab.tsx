@@ -44,6 +44,7 @@ import { Modal } from "../../components/Modal";
 import { StructureView } from "./StructureView";
 import { ExportDialog } from "./ExportDialog";
 import { ColumnVisibilityPanel } from "./ColumnVisibilityPanel";
+import { isShortcut, shortcutLabel } from "../../lib/keymap";
 import { RecordView } from "./RecordView";
 import { normalizeSmartQuotes, rawTextInputProps } from "../../lib/sqlText";
 
@@ -52,6 +53,8 @@ interface Props {
   table: TableRef;
   /** 탭을 열 때 적용할 필터(F4 로 들어온 경우). 백엔드가 값 바인딩으로 처리한다. */
   initialFilters?: FilterSpec[];
+  /** 지금 보이는 탭인지. 창 전체에서 받는 단축키(새로고침)는 보이는 탭만 처리한다. */
+  active?: boolean;
 }
 
 interface InsertRow {
@@ -154,7 +157,7 @@ function coerce(input: string, lt: LogicalType): Cell {
   }
 }
 
-export function DataGridTab({ connId, table, initialFilters }: Props) {
+export function DataGridTab({ connId, table, initialFilters, active = true }: Props) {
   const ui = useUiStore();
   const [page, setPage] = useState<TablePage | null>(null);
   const [offset, setOffset] = useState(0);
@@ -209,7 +212,7 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
   const [colPanel, setColPanel] = useState(false);
   /** 레코드 뷰(사이드 패널) 열림 여부. 커서 행을 세로로 펼쳐 본다. */
   const [recordOpen, setRecordOpen] = useState(false);
-  /** 행 이동 다이얼로그(⌘/Ctrl+G). 열려 있으면 입력 중인 행 번호를 들고 있다. */
+  /** 행 이동 다이얼로그(⌘L / Ctrl+G). 열려 있으면 입력 중인 행 번호를 들고 있다. */
   const [gotoRow, setGotoRow] = useState<string | null>(null);
   /** 선택 셀 집계에 쓸 함수. DataGrip 처럼 골라 쓸 수 있게 둔다(기본 합계). */
   const [aggFn, setAggFn] = useState<AggFn>("sum");
@@ -508,6 +511,81 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
     setEditing(null);
   }
 
+  /**
+   * 선택한 셀의 변경만 되돌린다(DataGrip 의 Revert Selected). 범위 안의 수정 값을 버리고,
+   * 범위에 걸린 행의 삭제 표시를 푼다. 전부 되돌리기는 툴바 버튼이다.
+   */
+  function revertSelected() {
+    if (!range) return;
+    setEdits((prev) => {
+      const next = { ...prev };
+      for (let r = range.r1; r <= range.r2; r++) {
+        const row = next[r];
+        if (!row) continue;
+        const kept = { ...row };
+        for (let c = range.c1; c <= range.c2; c++) delete kept[columns[c].name];
+        if (Object.keys(kept).length > 0) next[r] = kept;
+        else delete next[r];
+      }
+      return next;
+    });
+    setDeleted((prev) => {
+      const next = new Set(prev);
+      for (let r = range.r1; r <= range.r2; r++) next.delete(r);
+      return next;
+    });
+  }
+
+  /**
+   * 행 삭제 단축키. 행을 골라 두었으면 그 행들, 아니면 셀 범위에 걸친 행들을 삭제 표시한다 —
+   * 체크박스를 먼저 고르지 않아도 커서 행을 바로 지울 수 있게. 커밋 전까지는 pending 이다.
+   */
+  function deleteRowsByShortcut() {
+    if (!editable) return;
+    if (selection.size > 0) {
+      deleteSelected();
+      return;
+    }
+    if (!range) return;
+    setDeleted((prev) => {
+      const next = new Set(prev);
+      for (let r = range.r1; r <= range.r2; r++) next.add(r);
+      return next;
+    });
+  }
+
+  /**
+   * 새로고침(툴바 버튼 · 단축키). 커밋하지 않은 변경이 있으면 다시 읽지 않는다 —
+   * 다시 읽으면 pending 변경이 말없이 사라진다. 커밋하거나 되돌린 뒤 새로고침한다.
+   */
+  function reloadPage() {
+    if (pendingCount > 0) {
+      ui.pushToast({
+        kind: "info",
+        title: "새로고침하지 않았습니다",
+        message: `커밋하지 않은 변경 ${pendingCount}건이 있습니다. 커밋하거나 되돌린 뒤 새로고침하세요.`,
+      });
+      return;
+    }
+    load();
+  }
+
+  // 새로고침은 포커스가 WHERE 바·툴바에 있어도 통해야 해서 창 전체에서 받는다. 탭은 전부
+  // 마운트된 채 숨겨지므로 보이는 탭만 처리한다. 트리에서 누른 키는 사이드바가 먼저 받아
+  // 트리를 새로고침하고 여기까지 오지 않는다.
+  const reloadRef = useRef(reloadPage);
+  reloadRef.current = reloadPage;
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!isShortcut(e, "refresh")) return;
+      e.preventDefault();
+      reloadRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active]);
+
   /** 행 식별 값을 `id=3` 처럼 한 줄로. 로그에서 어느 행인지 알아보기 위한 표기다. */
   function keyLabel(pk: Record<string, Cell>): string {
     return Object.entries(pk)
@@ -728,53 +806,37 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
   function onGridKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     // 셀 편집 중에는 에디터(input)가, 값 뷰어가 떠 있으면 모달이 키를 처리한다.
     if (e.target instanceof HTMLInputElement || viewer) return;
+    // 단축키는 IntelliJ(DataGrip) 기본 키맵을 따른다(`lib/keymap.ts`, docs/DESIGN.md §6-8).
+    const run = (fn: () => unknown) => {
+      fn();
+      e.preventDefault();
+    };
+    // 행이 없어도 통해야 하는 것 — 빈 테이블에도 행을 추가하고 커밋할 수 있어야 한다.
+    if (isShortcut(e, "addRow")) return run(() => editable && addInsertRow());
+    if (isShortcut(e, "submit")) return run(() => pendingCount > 0 && commit());
     if (rows.length === 0 || columns.length === 0) return;
 
-    const mod = e.metaKey || e.ctrlKey;
+    if (isShortcut(e, "copy")) return run(copyCurrent);
+    if (isShortcut(e, "selectAll"))
+      return run(() => {
+        setAnchor({ row: 0, col: 0 });
+        setCursor({ row: rows.length - 1, col: columns.length - 1 });
+      });
+    if (isShortcut(e, "cloneRow")) return run(cloneRow);
+    if (isShortcut(e, "setNull")) return run(setRangeNull);
+    if (isShortcut(e, "deleteRow")) return run(deleteRowsByShortcut);
+    if (isShortcut(e, "revert")) return run(revertSelected);
+    if (isShortcut(e, "relatedRows")) return run(gotoRelated);
+    if (isShortcut(e, "gotoRow"))
+      return run(() => setGotoRow(cursor ? String(offset + cursor.row + 1) : ""));
+    if (isShortcut(e, "prevPage")) return run(() => setOffset(Math.max(0, offset - pageSize)));
+    if (isShortcut(e, "nextPage")) return run(() => !atLastPage && setOffset(offset + pageSize));
+    if (isShortcut(e, "valueView")) return run(() => cursor && setViewer(cursor));
+    if (isShortcut(e, "recordView")) return run(() => cursor && setRecordOpen((v) => !v));
+    if (isShortcut(e, "selectRow"))
+      return run(() => editable && cursor && toggleRowSelect(cursor.row));
 
-    if (mod && e.key.toLowerCase() === "c") {
-      copyCurrent();
-      e.preventDefault();
-      return;
-    }
-    // ⌘/Ctrl+D: 행 복제
-    if (mod && e.key.toLowerCase() === "d") {
-      cloneRow();
-      e.preventDefault();
-      return;
-    }
-    // ⌘/Ctrl+Shift+N: 선택 셀을 NULL 로
-    if (mod && e.shiftKey && e.key.toLowerCase() === "n") {
-      setRangeNull();
-      e.preventDefault();
-      return;
-    }
-    // F4: 관련 레코드로 이동 (DataGrip 과 같은 키)
-    if (e.key === "F4") {
-      gotoRelated();
-      e.preventDefault();
-      return;
-    }
-    // ⌘/Ctrl+G: 행 번호로 이동 (DataGrip 과 같은 키)
-    if (mod && e.key.toLowerCase() === "g") {
-      setGotoRow(cursor ? String(offset + cursor.row + 1) : "");
-      e.preventDefault();
-      return;
-    }
-    // ⌘/Ctrl+Alt+↑/↓: 이전·다음 페이지
-    if (mod && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-      if (e.key === "ArrowUp") setOffset(Math.max(0, offset - pageSize));
-      else if (!atLastPage) setOffset(offset + pageSize);
-      e.preventDefault();
-      return;
-    }
-    // ⌘/Ctrl+A: 표 전체 선택
-    if (mod && e.key.toLowerCase() === "a") {
-      setAnchor({ row: 0, col: 0 });
-      setCursor({ row: rows.length - 1, col: columns.length - 1 });
-      e.preventDefault();
-      return;
-    }
+    const mod = e.metaKey || e.ctrlKey;
     const NAV = [
       "ArrowDown",
       "ArrowUp",
@@ -821,13 +883,8 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
         break;
       case "Enter":
       case "F2":
-        // ⌘/Ctrl+Shift+Enter 는 레코드 뷰, Shift+Enter 는 값 뷰어,
-        // 그 외에는 편집(모두 DataGrip 과 같은 키).
-        if (e.key === "Enter" && e.shiftKey && (e.metaKey || e.ctrlKey)) {
-          setRecordOpen((v) => !v);
-        } else if (e.key === "Enter" && e.shiftKey) {
-          setViewer(cursor);
-        } else if (editable && !deleted.has(cursor.row)) {
+        // 레코드 뷰·값 뷰어는 위에서 단축키로 먼저 처리했다. 남은 것은 편집이다.
+        if (editable && !deleted.has(cursor.row)) {
           setEditing({ row: cursor.row, col: columns[cursor.col].name });
         }
         break;
@@ -882,14 +939,19 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
       <div className="grid-toolbar">
         <ViewToggle view={view} onChange={setView} />
         <span className="toolbar-sep" />
-        <button className="btn sm" onClick={load} disabled={loading} title="새로고침">
+        <button
+          className="btn sm"
+          onClick={reloadPage}
+          disabled={loading}
+          title={`새로고침 (${shortcutLabel("refresh")})`}
+        >
           <RefreshCw size={13} /> 새로고침
         </button>
         <button
           className="btn sm"
           onClick={addInsertRow}
           disabled={!editable}
-          title={editable ? "행 추가" : "컬럼 정보가 없어 편집 불가"}
+          title={editable ? `행 추가 (${shortcutLabel("addRow")})` : "컬럼 정보가 없어 편집 불가"}
         >
           <Plus size={13} /> 행 추가
         </button>
@@ -901,7 +963,7 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
             !editable
               ? "컬럼 정보가 없어 편집 불가"
               : cursor
-                ? "커서 행 복제 (⌘/Ctrl+D)"
+                ? `커서 행 복제 (${shortcutLabel("cloneRow")})`
                 : "복제할 행을 선택하세요"
           }
         >
@@ -911,7 +973,7 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
           className="btn sm"
           onClick={setRangeNull}
           disabled={!editable || !range}
-          title="선택 셀을 NULL 로 (⌘/Ctrl+Shift+N)"
+          title={`선택 셀을 NULL 로 (${shortcutLabel("setNull")})`}
         >
           NULL
         </button>
@@ -919,6 +981,7 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
           className="btn sm"
           onClick={deleteSelected}
           disabled={!editable || selection.size === 0}
+          title={`고른 행 삭제 (${shortcutLabel("deleteRow")} — 고른 행이 없으면 커서 행)`}
         >
           <Trash2 size={13} /> 선택 삭제 {selection.size > 0 ? `(${selection.size})` : ""}
         </button>
@@ -931,9 +994,9 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
           disabled={!cursor && selection.size === 0}
           title={
             selection.size > 0
-              ? `선택한 ${selection.size}개 행 복사 (⌘/Ctrl+C)`
+              ? `선택한 ${selection.size}개 행 복사 (${shortcutLabel("copy")})`
               : cursor
-                ? "셀 값 복사 (⌘/Ctrl+C)"
+                ? `셀 값 복사 (${shortcutLabel("copy")})`
                 : "셀을 클릭하거나 방향키로 선택하세요"
           }
         >
@@ -962,7 +1025,7 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
           disabled={!cursor}
           title={
             cursor
-              ? "값 전체 보기 (Shift+Enter)"
+              ? `값 전체 보기 (${shortcutLabel("valueView")})`
               : "셀을 클릭하거나 방향키로 선택하세요"
           }
         >
@@ -974,7 +1037,7 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
           disabled={!cursor}
           title={
             cursor
-              ? "레코드 뷰 — 한 행을 세로로 (⌘/Ctrl+Shift+Enter)"
+              ? `레코드 뷰 — 한 행을 세로로 (${shortcutLabel("recordView")})`
               : "행을 먼저 선택하세요"
           }
         >
@@ -1017,10 +1080,18 @@ export function DataGridTab({ connId, table, initialFilters }: Props) {
         {pendingCount > 0 && (
           <>
             <span className="muted">{pendingCount}건 변경 대기</span>
-            <button className="btn sm" onClick={revert} title="되돌리기">
+            <button
+              className="btn sm"
+              onClick={revert}
+              title={`전부 되돌리기 (고른 셀만: ${shortcutLabel("revert")})`}
+            >
               <RotateCcw size={13} /> 되돌리기
             </button>
-            <button className="btn sm primary" onClick={commit} title="커밋(트랜잭션)">
+            <button
+              className="btn sm primary"
+              onClick={commit}
+              title={`커밋(트랜잭션) (${shortcutLabel("submit")})`}
+            >
               <Check size={13} /> 커밋
             </button>
           </>
@@ -1609,7 +1680,7 @@ function CellEditor({
 }
 
 /**
- * 행 번호로 이동 (⌘/Ctrl+G — DataGrip 과 같은 키).
+ * 행 번호로 이동 (⌘L / Ctrl+G — DataGrip 과 같은 키).
  *
  * **현재 페이지 안에서만** 옮긴다. 화면에 보이는 번호(`offset + i + 1`)를 그대로 받되,
  * 페이지 밖 번호는 받지 않고 범위를 알려 준다 — 다른 페이지로 넘어가는 것은

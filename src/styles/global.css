@@ -1533,6 +1533,27 @@ table.grid tbody tr.selected td {
   word-break: break-word;
 }
 
+/* ===== 연결되지 않은 탭 — 재시작 뒤 복원됐거나 연결을 끊은 경우(docs/DESIGN.md §6-7) ===== */
+.tab.disconnected .tab-label {
+  opacity: 0.55;
+}
+.disconnected-sql {
+  margin: 0;
+  max-width: min(640px, 90%);
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  cursor: text;
+}
+
 /* 콘솔 툴바의 컨텍스트 선택 — 툴바 높이에 맞춘 작은 select. */
 .select.sm {
   padding: 2px 4px;

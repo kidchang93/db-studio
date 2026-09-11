@@ -39,7 +39,7 @@
 | `main.tsx`, `App.tsx` | 엔트리, 최상위 셸 마운트 |
 | `types/` | 백엔드 `models.rs`와 1:1 대응하는 TS 타입 (IPC 계약) |
 | `api/` | `invoke` 래퍼. **command 하나당 함수 하나.** 컴포넌트는 여기만 호출 |
-| `store/` | zustand 스토어. `connectionStore`(프로필·활성연결), `workspaceStore`(탭·활성객체), `logStore`(실행 로그), 그리드/쿼리 상태 |
+| `store/` | zustand 스토어. `connectionStore`(프로필·활성연결), `workspaceStore`(탭·활성객체), `logStore`(실행 로그), 그리드/쿼리 상태. `workspacePersist` 는 스토어가 아니라 작업공간 저장·복원 함수 모음 |
 | `features/connections/` | 프로필 목록, 연결 추가/수정 다이얼로그(DB종류별 폼), 연결/해제 |
 | `features/explorer/` | 좌측 스키마 트리 (DB→스키마→테이블→컬럼), 지연 로딩 |
 | `features/grid/` | 데이터 그리드: 가상 스크롤, 인라인 편집, pending 변경 추적, 커밋 |
@@ -119,7 +119,8 @@ profiles ◄── commands (연결 저장/로드 시)
 
 - **연결 프로필**: 앱 config dir(`app.path().app_config_dir()`)의 `profiles.json`. 비밀번호를 제외한 접속정보 + `keyring` 참조.
 - **비밀번호**: `keyring` 크레이트로 OS 키체인(macOS Keychain / Windows Credential Manager)에 `service=DB Studio, account=profileId`로 저장.
-- **UI 상태**(열린 탭, 패널 크기 등)는 로컬 저장 대상이나 MVP 범위 밖 → 추후 `docs`에 반영 후 추가.
+- **작업공간**(열린 탭 · 콘솔 SQL·DB 컨텍스트): WebView `localStorage` (`store/workspacePersist.ts`). 탭은 프로필 id 로 저장해 재시작 뒤 그 프로필이 연결되면 되살아난다(`DESIGN.md` §6-7). 쿼리 히스토리도 같은 곳이다(`historyStore`).
+- 패널 크기 등 나머지 UI 상태는 아직 저장하지 않는다.
 
 ## 8. 배포 & 자동 업데이트
 

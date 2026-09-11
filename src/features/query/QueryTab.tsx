@@ -20,6 +20,8 @@ import { useUiStore } from "../../store/uiStore";
 import { useHistoryStore } from "../../store/historyStore";
 import { useLogStore } from "../../store/logStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { loadDraft, saveDraft } from "../../store/workspacePersist";
+import { isShortcut, shortcutLabel } from "../../lib/keymap";
 import { QueryHistory } from "./QueryHistory";
 import {
   findErrorSpot,
@@ -52,7 +54,9 @@ function dialectFor(kind?: DbKind): SQLDialect {
 export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const ui = useUiStore();
   const kind = useConnectionStore((s) => s.connections[connId]?.handle.kind);
-  const [text, setText] = useState("SELECT 1;");
+  /** 앱을 다시 켜거나 다시 연결했을 때 이어서 쓰도록 남겨 둔 내용(`store/workspacePersist.ts`). */
+  const [draft] = useState(() => loadDraft(tabId));
+  const [text, setText] = useState(draft?.sql ?? "SELECT 1;");
   /** 결과셋들. 다중 문장이면 여러 개가 온다. */
   const [results, setResults] = useState<QueryResult[]>([]);
   /** 지금 보고 있는 결과 탭. */
@@ -78,7 +82,16 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
    * 콘솔마다 따로 갖는다 — 탭을 여럿 열어 서로 다른 DB 를 보는 것이 흔한 사용이고,
    * 백엔드가 쿼리와 같은 커넥션에서 컨텍스트를 적용하므로 탭끼리 간섭하지 않는다.
    */
-  const [ctx, setCtx] = useState<ExecContext>({ database: null, schema: null });
+  const [ctx, setCtx] = useState<ExecContext>(draft?.ctx ?? { database: null, schema: null });
+  /**
+   * 내용을 남긴다. 키 입력마다 쓰지 않고 입력이 멈췄을 때 쓴다.
+   * 결과와 "변경 행 보기"는 남기지 않는다 — 사용자 SQL 을 고쳐 보내는 토글이
+   * 재시작 뒤에도 켜진 채 있으면 안 된다.
+   */
+  useEffect(() => {
+    const t = setTimeout(() => saveDraft(tabId, { sql: text, ctx }), 300);
+    return () => clearTimeout(t);
+  }, [tabId, text, ctx]);
   const [dbs, setDbs] = useState<string[]>([]);
   const [schemas, setSchemas] = useState<string[]>([]);
   /** 자동완성용 테이블→컬럼 맵. 컨텍스트가 바뀔 때만 다시 받는다. */
@@ -102,14 +115,15 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   const connName = useConnectionStore((s) => s.connections[connId]?.name ?? connId);
 
   /**
-   * ⌘/Ctrl+E → 히스토리 토글 (DataGrip 과 같은 키).
+   * 쿼리 히스토리 토글 — ⌥⌘E / Ctrl+Alt+E (IntelliJ 의 Console.History.Browse).
+   * ⌘E 는 IntelliJ 에서 "최근 파일"이라 쓰지 않는다.
    *
    * 탭은 전부 마운트된 채 `display` 로만 숨겨지므로 **활성 탭만** 반응해야 한다.
    * 그렇지 않으면 열어 둔 콘솔 수만큼 패널이 함께 열린다.
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "e") return;
+      if (!isShortcut(e, "queryHistory")) return;
       // CodeMirror 등이 이미 처리했으면 넘긴다.
       if (e.defaultPrevented) return;
       if (useWorkspaceStore.getState().activeTabId !== tabId) return;
@@ -334,7 +348,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
             className="btn sm primary"
             onClick={() => guarded(runAuto)}
             disabled={running}
-            title="Ctrl/Cmd+Enter — 여러 문장을 넣으면 전부 실행하고 결과를 탭으로 보여 줍니다"
+            title={`${shortcutLabel("execute")} — 여러 문장을 넣으면 전부 실행하고 결과를 탭으로 보여 줍니다`}
           >
             <Play size={13} /> 실행
           </button>
@@ -354,7 +368,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
           <button
             className={`btn sm${historyOpen ? " on" : ""}`}
             onClick={() => setHistoryOpen((v) => !v)}
-            title="쿼리 히스토리 (Ctrl/Cmd+E)"
+            title={`쿼리 히스토리 (${shortcutLabel("queryHistory")})`}
           >
             <History size={13} /> 히스토리
           </button>
@@ -416,7 +430,7 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
             <div
               style={{ height: "100%", overflow: "auto" }}
               onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                if (isShortcut(e, "execute")) {
                   e.preventDefault();
                   guarded(runAuto);
                 }

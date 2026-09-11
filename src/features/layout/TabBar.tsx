@@ -1,6 +1,7 @@
 import { Table2, Terminal, X } from "lucide-react";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
+import { shortcutLabel } from "../../lib/keymap";
 
 export function TabBar() {
   const tabs = useWorkspaceStore((s) => s.tabs);
@@ -21,9 +22,12 @@ export function TabBar() {
       {tabs.map((t) => (
         <div
           key={t.id}
-          className={`tab ${t.id === activeTabId ? "active" : ""}`}
+          className={`tab ${t.id === activeTabId ? "active" : ""}${connections[t.connId] ? "" : " disconnected"}`}
           onClick={() => setActive(t.id)}
-          title={t.kind === "table" ? t.table.name : t.title}
+          title={
+            (t.kind === "table" ? t.table.name : t.title) +
+            (connections[t.connId] ? "" : " — 연결 안 됨")
+          }
         >
           {t.kind === "table" ? <Table2 size={13} /> : <Terminal size={13} />}
           <span className="tab-label">
@@ -48,7 +52,7 @@ export function TabBar() {
         disabled={!canOpenConsole}
         title={
           canOpenConsole
-            ? `${active.connName} 에 SQL 콘솔 열기 (⌘/Ctrl+K)`
+            ? `${active.connName} 에 SQL 콘솔 열기 (${shortcutLabel("newConsole")})`
             : "연결된 탭이 있어야 콘솔을 열 수 있습니다"
         }
         onClick={() => active && openQuery(active.connId, active.connName)}

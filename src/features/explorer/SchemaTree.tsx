@@ -17,6 +17,7 @@ import {
   matches,
   showContainer,
   useTreeFilter,
+  useTreeRefresh,
 } from "./filterContext";
 import { useConnectionStore } from "../../store/connectionStore";
 import { useUiStore } from "../../store/uiStore";
@@ -98,6 +99,7 @@ function DatabaseList({
   kind,
 }: Ctx & { kind: DbKind }) {
   const [dbs, setDbs] = useState<string[] | null>(null);
+  const refresh = useTreeRefresh();
   const toastError = useUiStore((s) => s.toastError);
 
   useEffect(() => {
@@ -119,7 +121,7 @@ function DatabaseList({
     return () => {
       cancelled = true;
     };
-  }, [connId, toastError, onTopLevel]);
+  }, [connId, toastError, onTopLevel, refresh]);
 
   if (dbs === null) return <Loading depth={1} />;
   if (dbs.length === 0) return <div className="tree-empty">데이터베이스 없음</div>;
@@ -194,6 +196,7 @@ function DatabaseNode({
 
 function RootSchemas({ connId, connName, path, onTopLevel }: Ctx) {
   const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
+  const refresh = useTreeRefresh();
   const toastError = useUiStore((s) => s.toastError);
 
   useEffect(() => {
@@ -214,7 +217,7 @@ function RootSchemas({ connId, connName, path, onTopLevel }: Ctx) {
     return () => {
       cancelled = true;
     };
-  }, [connId, toastError, onTopLevel]);
+  }, [connId, toastError, onTopLevel, refresh]);
 
   if (schemas === null) return <Loading depth={1} />;
   // 스키마 계층이 없는 DB(SQLite): 테이블 직접.
@@ -255,6 +258,7 @@ function SchemaList({
   depth,
 }: Ctx & { database: string; depth: number }) {
   const [schemas, setSchemas] = useState<SchemaInfo[] | null>(null);
+  const refresh = useTreeRefresh();
   const toastError = useUiStore((s) => s.toastError);
 
   useEffect(() => {
@@ -271,7 +275,7 @@ function SchemaList({
     return () => {
       cancelled = true;
     };
-  }, [connId, database, toastError]);
+  }, [connId, database, toastError, refresh]);
 
   if (schemas === null) return <Loading depth={depth} />;
   if (schemas.length === 0) {
@@ -357,6 +361,7 @@ function TableNodes({
   depth,
 }: Ctx & { database: string | null; schema: string | null; depth: number }) {
   const [tables, setTables] = useState<TableInfo[] | null>(null);
+  const refresh = useTreeRefresh();
   const toastError = useUiStore((s) => s.toastError);
   const openTable = useWorkspaceStore((s) => s.openTable);
   const filter = useTreeFilter();
@@ -375,7 +380,7 @@ function TableNodes({
     return () => {
       cancelled = true;
     };
-  }, [connId, database, schema, toastError]);
+  }, [connId, database, schema, toastError, refresh]);
 
   // 범위 밖이면 테이블을 아예 그리지 않는다.
   if (!inScope(filter, path)) return null;

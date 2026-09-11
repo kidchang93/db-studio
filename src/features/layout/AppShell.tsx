@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Database, Terminal } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -10,11 +10,13 @@ import { Sidebar } from "../connections/Sidebar";
 import { StatusBar } from "./StatusBar";
 import { LogPanel } from "./LogPanel";
 import { TabBar } from "./TabBar";
+import { DisconnectedPane } from "./DisconnectedPane";
 import { DataGridTab } from "../grid/DataGridTab";
 import { QueryTab } from "../query/QueryTab";
 import { Toasts } from "../../components/Toasts";
+import { isShortcut, isWebviewReload, shortcutLabel } from "../../lib/keymap";
 import { useConnectionStore } from "../../store/connectionStore";
-import { useWorkspaceStore } from "../../store/workspaceStore";
+import { useWorkspaceStore, type Tab } from "../../store/workspaceStore";
 import { useLogStore } from "../../store/logStore";
 
 export function AppShell() {
@@ -25,7 +27,7 @@ export function AppShell() {
   const logOpen = useLogStore((s) => s.open);
 
   /**
-   * ⌘/Ctrl+F → 지금 있는 영역의 검색창으로 포커스.
+   * 찾기(⌘F / Ctrl+F) → 지금 있는 영역의 검색창으로 포커스.
    *
    * 검색창이 여러 곳(트리 · 구조 뷰 · WHERE 바)이라 포커스 위치로 대상을 고른다.
    * 각 영역은 `data-search-scope`, 그 안의 입력은 `data-search-input` 으로 표시한다.
@@ -33,7 +35,7 @@ export function AppShell() {
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "f") return;
+      if (!isShortcut(e, "find")) return;
       // SQL 에디터(CodeMirror)는 자체 검색 패널을 연다. 이미 처리됐으면 넘긴다.
       if (e.defaultPrevented) return;
       const scope = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
@@ -54,14 +56,14 @@ export function AppShell() {
   }, []);
 
   /**
-   * ⌘/Ctrl+W → 활성 탭 닫기.
+   * 탭 닫기(⌘W / Ctrl+F4, IntelliJ 의 CloseContent).
    *
    * macOS 기본 메뉴의 "창 닫기"를 제거해(`src-tauri/src/lib.rs`) 이 키가 여기까지 온다.
    * 열린 탭이 없으면 브라우저처럼 창을 닫는다 — ⌘W 로 앱을 빠져나갈 길은 남겨 둔다.
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "w") return;
+      if (!isShortcut(e, "closeTab")) return;
       if (e.defaultPrevented) return;
       e.preventDefault();
       const { tabs: cur, activeTabId: id, closeTab } = useWorkspaceStore.getState();
@@ -76,12 +78,12 @@ export function AppShell() {
   }, []);
 
   /**
-   * ⌘/Ctrl+K → SQL 콘솔 열기.
+   * SQL 콘솔 열기(⌘K / Ctrl+K).
    * 지금 보고 있는 탭의 연결을 쓰고, 탭이 없으면 연결된 것 중 첫 번째를 쓴다.
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "k") return;
+      if (!isShortcut(e, "newConsole")) return;
       if (e.defaultPrevented) return;
       const { tabs: cur, activeTabId: id } = useWorkspaceStore.getState();
       const active = cur.find((t) => t.id === id);
@@ -98,6 +100,28 @@ export function AppShell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openQuery]);
+
+  /**
+   * 다음·이전 탭(⌘⇧] ⌘⇧[ / Alt+→ Alt+←, IntelliJ 의 NextTab · PreviousTab).
+   *
+   * 웹뷰 새로고침 키도 여기서 막는다 — 웹뷰가 새로 읽히면 화면이 연결 목록을 잊는데
+   * 백엔드 세션은 남는다. 우리 새로고침(⌘R / Ctrl+F5)은 트리·그리드가 각자 처리한다.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isWebviewReload(e)) e.preventDefault();
+      const next = isShortcut(e, "nextTab");
+      if (!next && !isShortcut(e, "prevTab")) return;
+      if (e.defaultPrevented) return;
+      const { tabs: cur, activeTabId: id, setActive } = useWorkspaceStore.getState();
+      if (cur.length < 2) return;
+      e.preventDefault();
+      const i = cur.findIndex((t) => t.id === id);
+      setActive(cur[(i + (next ? 1 : -1) + cur.length) % cur.length].id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="app">
@@ -123,14 +147,11 @@ export function AppShell() {
                     className="tab-pane"
                     style={{ display: t.id === activeTabId ? "flex" : "none" }}
                   >
-                    {t.kind === "table" ? (
-                      <DataGridTab
-                        connId={t.connId}
-                        table={t.table}
-                        initialFilters={t.initialFilters}
-                      />
+                    {!connections[t.connId] ? (
+                      <DisconnectedPane tab={t} />
                     ) : (
-                      <QueryTab connId={t.connId} tabId={t.id} />
+                      // 연결이 바뀌면(재연결) 이전 연결의 상태를 끌고 가지 않도록 새로 마운트한다.
+                      <TabContent key={t.connId} tab={t} active={t.id === activeTabId} />
                     )}
                   </div>
                 ))}
@@ -143,6 +164,32 @@ export function AppShell() {
       <StatusBar />
       <Toasts />
     </div>
+  );
+}
+
+/**
+ * 탭 내용. **한 번이라도 열어 본 뒤에야** 그린다.
+ *
+ * 재시작 뒤 복원한 탭이 여럿이면, 프로필을 연결하는 순간 전부 동시에 마운트되어
+ * 테이블 탭마다 페이지·COUNT·PK 조회를 한꺼번에 보낸다. SQL Server 는 연결 하나에
+ * 줄을 세우므로 지금 보려는 탭이 그 뒤로 밀리고, 운영 DB 에 괜한 부하를 준다.
+ * IntelliJ 처럼 보이는 탭만 불러온다. 한 번 그린 뒤에는 숨겨도 상태를 유지한다.
+ */
+function TabContent({ tab, active }: { tab: Tab; active: boolean }) {
+  const [seen, setSeen] = useState(active);
+  useEffect(() => {
+    if (active) setSeen(true);
+  }, [active]);
+  if (!seen && !active) return null;
+  return tab.kind === "table" ? (
+    <DataGridTab
+      connId={tab.connId}
+      table={tab.table}
+      initialFilters={tab.initialFilters}
+      active={active}
+    />
+  ) : (
+    <QueryTab connId={tab.connId} tabId={tab.id} />
   );
 }
 
@@ -178,7 +225,7 @@ function WelcomePane({
               <Terminal size={13} /> {c.name} SQL 콘솔
             </button>
           ))}
-          <div className="muted welcome-hint">단축키 ⌘/Ctrl+K</div>
+          <div className="muted welcome-hint">단축키 {shortcutLabel("newConsole")}</div>
         </div>
       )}
     </div>

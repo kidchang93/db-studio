@@ -25,7 +25,8 @@ import { Modal } from "../../components/Modal";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { SchemaPicker } from "./SchemaPicker";
 import { SchemaTree } from "../explorer/SchemaTree";
-import { isFilterActive, TreeFilterContext } from "../explorer/filterContext";
+import { isFilterActive, TreeFilterContext, TreeRefreshContext } from "../explorer/filterContext";
+import { isShortcut } from "../../lib/keymap";
 import {
   connIdForProfile,
   useConnectionStore,
@@ -65,8 +66,10 @@ export function Sidebar() {
   const connectProfile = useConnectionStore((s) => s.connectProfile);
   const disconnect = useConnectionStore((s) => s.disconnect);
   const deleteProfile = useConnectionStore((s) => s.deleteProfile);
-  const closeConnectionTabs = useWorkspaceStore((s) => s.closeConnectionTabs);
+  const closeProfileTabs = useWorkspaceStore((s) => s.closeProfileTabs);
   const openQuery = useWorkspaceStore((s) => s.openQuery);
+  /** 트리 새로고침 신호(⌘R / Ctrl+F5). 올리면 열려 있는 노드가 목록을 다시 받는다. */
+  const [treeRefresh, setTreeRefresh] = useState(0);
 
   const [dialog, setDialog] = useState<{ profile: ConnectionProfile | null } | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -360,21 +363,32 @@ export function Sidebar() {
   }
 
   async function handleDisconnect(connId: string) {
-    closeConnectionTabs(connId);
+    // 프로필 탭은 닫지 않는다 — "연결 안 됨"으로 남았다가 다시 연결하면 이어서 열린다
+    // (IntelliJ 콘솔처럼). 되살릴 수 없는 임시 연결의 탭은 workspaceStore 가 닫는다.
     await disconnect(connId);
   }
 
   async function handleDelete(profile: ConnectionProfile) {
+    // 프로필이 사라지면 그 탭은 다시 연결할 길이 없으므로 연결 여부와 무관하게 닫는다.
+    closeProfileTabs(profile.id);
     const connId = connIdForProfile(connections, profile.id);
-    if (connId) {
-      closeConnectionTabs(connId);
-      await disconnect(connId);
-    }
+    if (connId) await disconnect(connId);
     await deleteProfile(profile.id);
   }
 
   return (
-    <div className="panel" data-search-scope="tree">
+    <div
+      className="panel"
+      data-search-scope="tree"
+      onKeyDown={(e) => {
+        // 트리에 포커스가 있을 때의 새로고침은 트리 몫이다(DataGrip 의 Database Explorer Refresh).
+        // 창 전체에서 받는 그리드 새로고침까지 가지 않게 여기서 멈춘다.
+        if (!isShortcut(e, "refresh")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setTreeRefresh((n) => n + 1);
+      }}
+    >
       <div className="sidebar-header">
         <Database size={14} />
         <span className="spacer">데이터 소스</span>
@@ -460,6 +474,7 @@ export function Sidebar() {
       </div>
 
       <TreeFilterContext.Provider value={treeFilter}>
+      <TreeRefreshContext.Provider value={treeRefresh}>
       <div
         className="tree"
         ref={treeRef}
@@ -587,6 +602,7 @@ export function Sidebar() {
           );
         })}
       </div>
+      </TreeRefreshContext.Provider>
       </TreeFilterContext.Provider>
 
       {picker && (

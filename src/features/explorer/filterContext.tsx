@@ -29,6 +29,16 @@ export function useTreeFilter(): TreeFilter {
   return useContext(TreeFilterContext);
 }
 
+/**
+ * 트리 새로고침 신호(⌘R / Ctrl+F5). 값이 바뀌면 **열려 있는** 노드가 목록을 다시 받는다.
+ * 지연 로딩이라 닫힌 노드는 애초에 받은 적이 없으니 대상이 아니다.
+ */
+export const TreeRefreshContext = createContext(0);
+
+export function useTreeRefresh(): number {
+  return useContext(TreeRefreshContext);
+}
+
 /** 기본값에서 벗어난 필터가 하나라도 걸려 있는지(뱃지 표시용). */
 export function isFilterActive(f: TreeFilter): boolean {
   return f.hideUnmatched || !f.showTables || !f.showViews;

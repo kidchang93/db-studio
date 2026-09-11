@@ -3,6 +3,7 @@ import { Copy, Download } from "lucide-react";
 import type { Cell, QueryResult } from "../../types";
 import { useUiStore } from "../../store/uiStore";
 import { ExportDialog } from "./ExportDialog";
+import { isShortcut, shortcutLabel } from "../../lib/keymap";
 
 function display(v: Cell): string {
   if (v === null || v === undefined) return "NULL";
@@ -96,13 +97,12 @@ export function ResultTable({ result }: { result: QueryResult }) {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    const mod = e.metaKey || e.ctrlKey;
-    if (mod && e.key.toLowerCase() === "c") {
+    if (isShortcut(e, "copy")) {
       copySelection();
       e.preventDefault();
       return;
     }
-    if (mod && e.key.toLowerCase() === "a") {
+    if (isShortcut(e, "selectAll")) {
       setAnchor({ row: 0, col: 0 });
       setCursor({ row: rows.length - 1, col: cols.length - 1 });
       e.preventDefault();
@@ -144,7 +144,7 @@ export function ResultTable({ result }: { result: QueryResult }) {
           </span>
         ) : (
           <span className="muted">
-            {rows.length}행 · 셀을 고르고 ⌘/Ctrl+C, 고른 것이 없으면 전체
+            {rows.length}행 · 셀을 고르고 {shortcutLabel("copy")}, 고른 것이 없으면 전체
           </span>
         )}
       </div>
