@@ -64,13 +64,16 @@ pub struct SslConfig {
 }
 
 /// SSH 터널(bastion 경유) 옵션. OS `ssh` 클라이언트로 로컬 포트포워딩한다(키 기반 인증).
+///
+/// `host` 에 `~/.ssh/config` 의 Host 별칭을 넣고 포트·사용자를 비우면 config 값을 따른다.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshConfig {
     pub host: String,
     #[serde(default)]
     pub port: Option<u16>,
-    pub user: String,
+    #[serde(default)]
+    pub user: Option<String>,
     /// 개인키 파일 경로. 없으면 ssh-agent/기본 키를 사용한다.
     #[serde(default)]
     pub key_path: Option<String>,

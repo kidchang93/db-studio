@@ -31,7 +31,7 @@ export interface SslConfig {
 export interface SshConfig {
   host: string;
   port?: number | null;
-  user: string;
+  user?: string | null;
   keyPath?: string | null;
 }
 

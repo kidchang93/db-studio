@@ -52,7 +52,7 @@ export function ConnectionDialog({ profile, onClose }: Props) {
   // SSH 터널
   const [sshEnabled, setSshEnabled] = useState(!!profile?.ssh);
   const [sshHost, setSshHost] = useState(profile?.ssh?.host ?? "");
-  const [sshPort, setSshPort] = useState(profile?.ssh?.port?.toString() ?? "22");
+  const [sshPort, setSshPort] = useState(profile?.ssh?.port?.toString() ?? "");
   const [sshUser, setSshUser] = useState(profile?.ssh?.user ?? "");
   const [sshKeyPath, setSshKeyPath] = useState(profile?.ssh?.keyPath ?? "");
 
@@ -62,7 +62,6 @@ export function ConnectionDialog({ profile, onClose }: Props) {
   );
   const [showAdvanced, setShowAdvanced] = useState(
     (!!profile?.ssl && profile.ssl.mode !== "disable") ||
-      !!profile?.ssh ||
       Object.keys(profile?.params ?? {}).length > 0,
   );
   const [busy, setBusy] = useState(false);
@@ -96,11 +95,13 @@ export function ConnectionDialog({ profile, onClose }: Props) {
   }
 
   function buildSsh(): SshConfig | null {
-    if (usesFile || !sshEnabled || !sshHost.trim() || !sshUser.trim()) return null;
+    if (usesFile || !sshEnabled) return null;
+    // 조용히 직결로 떨어지면 같은 주소의 로컬 DB(예: Docker)에 붙고도 운영인 줄 알게 된다.
+    if (!sshHost.trim()) throw new Error("SSH 호스트를 입력하세요");
     return {
       host: sshHost.trim(),
       port: sshPort ? Number(sshPort) : null,
-      user: sshUser.trim(),
+      user: sshUser.trim() || null,
       keyPath: sshKeyPath || null,
     };
   }
@@ -227,7 +228,7 @@ export function ConnectionDialog({ profile, onClose }: Props) {
         <>
           <div className="row" style={{ gap: 12 }}>
             <div className="field" style={{ flex: 3 }}>
-              <label>호스트</label>
+              <label>호스트{sshEnabled ? " (SSH 서버 기준 — 같은 서버면 127.0.0.1)" : ""}</label>
               <input className="input" value={host} onChange={(e) => setHost(e.target.value)} />
             </div>
             <div className="field" style={{ flex: 1 }}>
@@ -276,6 +277,58 @@ export function ConnectionDialog({ profile, onClose }: Props) {
             />
             <span>비밀번호를 OS 키체인에 저장</span>
           </label>
+
+          <div className="field">
+            <label className="row" style={{ cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={sshEnabled}
+                onChange={(e) => setSshEnabled(e.target.checked)}
+              />
+              <span>SSH 터널 사용 (키 인증)</span>
+            </label>
+          </div>
+          {sshEnabled && (
+            <>
+              <div className="row" style={{ gap: 12 }}>
+                <div className="field" style={{ flex: 3 }}>
+                  <label>SSH 호스트</label>
+                  <input
+                    className="input"
+                    placeholder="1.2.3.4 또는 ~/.ssh/config 의 Host 별칭"
+                    value={sshHost}
+                    onChange={(e) => setSshHost(e.target.value)}
+                  />
+                </div>
+                <div className="field" style={{ flex: 1 }}>
+                  <label>포트</label>
+                  <input
+                    className="input"
+                    placeholder="22"
+                    value={sshPort}
+                    onChange={(e) => setSshPort(e.target.value.replace(/[^0-9]/g, ""))}
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label>SSH 사용자 (비우면 ~/.ssh/config)</label>
+                <input
+                  className="input"
+                  value={sshUser}
+                  onChange={(e) => setSshUser(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label>개인키 경로 (비우면 ~/.ssh/config · ssh-agent)</label>
+                <input
+                  className="input mono"
+                  placeholder="~/.ssh/id_ed25519"
+                  value={sshKeyPath}
+                  onChange={(e) => setSshKeyPath(e.target.value)}
+                />
+              </div>
+            </>
+          )}
 
           {/* ===== 고급 (SSL + 파라미터) ===== */}
           <button
@@ -334,57 +387,6 @@ export function ConnectionDialog({ profile, onClose }: Props) {
                         onChange={(e) => setClientKey(e.target.value)}
                       />
                     </div>
-                  </div>
-                </>
-              )}
-
-              <div className="field">
-                <label className="row" style={{ cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={sshEnabled}
-                    onChange={(e) => setSshEnabled(e.target.checked)}
-                  />
-                  <span>SSH 터널 사용 (bastion 경유 · 키 인증)</span>
-                </label>
-              </div>
-              {sshEnabled && (
-                <>
-                  <div className="row" style={{ gap: 12 }}>
-                    <div className="field" style={{ flex: 3 }}>
-                      <label>SSH 호스트</label>
-                      <input
-                        className="input"
-                        placeholder="bastion.example.com"
-                        value={sshHost}
-                        onChange={(e) => setSshHost(e.target.value)}
-                      />
-                    </div>
-                    <div className="field" style={{ flex: 1 }}>
-                      <label>포트</label>
-                      <input
-                        className="input"
-                        value={sshPort}
-                        onChange={(e) => setSshPort(e.target.value.replace(/[^0-9]/g, ""))}
-                      />
-                    </div>
-                  </div>
-                  <div className="field">
-                    <label>SSH 사용자</label>
-                    <input
-                      className="input"
-                      value={sshUser}
-                      onChange={(e) => setSshUser(e.target.value)}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>개인키 경로 (비우면 ssh-agent/기본 키)</label>
-                    <input
-                      className="input mono"
-                      placeholder="~/.ssh/id_ed25519"
-                      value={sshKeyPath}
-                      onChange={(e) => setSshKeyPath(e.target.value)}
-                    />
                   </div>
                 </>
               )}

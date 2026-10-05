@@ -328,7 +328,11 @@ sqlx 쪽(PG·MySQL·SQLite)은 `fetch_many` 가 결과셋과 행 수를 한 스�
 ## 10. 연결 전송 보안 옵션
 
 - **SSL/TLS**(`SslConfig`): 모드(disable~verify-full) + CA/클라이언트 cert/key 경로. PG/MySQL 은 sqlx 옵션으로, MSSQL 은 encrypt/trust(+CA)로 매핑(`db/*.rs::connect`). 인증서는 **파일 경로**만 프로필에 저장(파일 자체는 사용자 디스크에 유지).
-- **SSH 터널**(`SshConfig`): OS `ssh` 클라이언트로 로컬 포트포워딩(`db/tunnel.rs`). 키 기반 인증(`BatchMode`), 터널은 `ManagedConnection` 수명에 묶여 disconnect 시 종료. `verify-full` + SSH 동시 사용 시 호스트명 검증이 127.0.0.1 과 충돌할 수 있음(문서화된 한계).
+- **SSH 터널**(`SshConfig`): OS `ssh` 클라이언트로 로컬 포트포워딩(`db/tunnel.rs`). 키 기반 인증(`BatchMode`), 터널은 `ManagedConnection` 수명에 묶여 disconnect 시 종료(`kill_on_drop`). `verify-full` + SSH 동시 사용 시 호스트명 검증이 127.0.0.1 과 충돌할 수 있음(문서화된 한계).
+  - 포트·사용자·키를 **비우면 ssh 에 넘기지 않는다** — 호스트에 `~/.ssh/config` 의 Host 별칭을 넣으면 config 의 User·Port·IdentityFile 이 그대로 적용된다. DB 호스트는 SSH 서버 기준 주소다(같은 서버면 `127.0.0.1`).
+  - SSH 를 켜고 호스트를 비우면 **저장·테스트를 막는다**. 조용히 직결로 떨어지면 같은 주소·포트의 로컬 DB(Docker 등)에 붙고도 운영 DB 인 줄 알게 된다.
+  - ssh 가 죽으면 stderr 를 오류 문구로 돌려준다(`Permission denied`, `bad permissions` 등). Windows 에서는 `CREATE_NO_WINDOW` 로 콘솔 창이 뜨지 않게 한다.
+  - UI 는 고급 섹션이 아니라 연결 다이얼로그 본문의 "SSH 터널 사용" 체크박스다.
 - **자유 파라미터**(`params`): 드라이버가 인식하는 키만 적용(예: PG `application_name`). 미지원 키는 무시.
 - 새 전송 옵션 추가 시: `models.rs`(+TS 타입) → 각 드라이버 `connect` 매핑 → `ConnectionDialog` 고급 섹션 UI 순으로 확장.
 
