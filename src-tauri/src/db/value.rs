@@ -136,7 +136,8 @@ pub fn pg_cell(row: &sqlx::postgres::PgRow, i: usize) -> Value {
         )),
         "TEXT" | "VARCHAR" | "BPCHAR" | "CHAR" | "NAME" | "CITEXT" => decode!(row, i, String),
         "UUID" => decode!(row, i, uuid::Uuid, |u| Value::String(u.to_string())),
-        "JSON" | "JSONB" => row.try_get::<Value, _>(i).unwrap_or(Value::Null),
+        // 프론트 Cell 은 스칼라뿐이라 객체로 보내면 "[object Object]" 가 된다 — 텍스트로 보낸다.
+        "JSON" | "JSONB" => decode!(row, i, Value, |j| Value::String(j.to_string())),
         "DATE" => decode!(row, i, chrono::NaiveDate, |d| Value::String(d.to_string())),
         "TIME" => decode!(row, i, chrono::NaiveTime, |t| Value::String(t.to_string())),
         "TIMESTAMP" => {
@@ -180,7 +181,7 @@ pub fn mysql_cell(row: &sqlx::mysql::MySqlRow, i: usize) -> Value {
         "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
             decode!(row, i, String)
         }
-        "JSON" => row.try_get::<Value, _>(i).unwrap_or(Value::Null),
+        "JSON" => decode!(row, i, Value, |j| Value::String(j.to_string())),
         "DATE" => decode!(row, i, chrono::NaiveDate, |d| Value::String(d.to_string())),
         "TIME" => decode!(row, i, chrono::NaiveTime, |t| Value::String(t.to_string())),
         "DATETIME" | "TIMESTAMP" => {

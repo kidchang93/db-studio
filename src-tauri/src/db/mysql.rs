@@ -669,6 +669,23 @@ mod tests {
         }
     }
 
+    /// JSON 은 객체가 아니라 텍스트로 와야 그리드에 "[object Object]" 가 찍히지 않는다.
+    #[tokio::test]
+    #[ignore]
+    async fn json_cells_come_as_text() {
+        let d = MysqlDriver::connect(&test_config()).await.expect("연결");
+        let r = d
+            .run_query(
+                r#"SELECT CAST('{"a":1}' AS JSON) AS j, JSON_ARRAY(1, 'x') AS ja"#,
+                10,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("조회");
+        assert_eq!(r.rows[0][0], serde_json::json!(r#"{"a":1}"#));
+        assert_eq!(r.rows[0][1], serde_json::json!(r#"[1,"x"]"#));
+    }
+
     /// 콘솔 결과 페이징: 전용 연결로 이어 읽는다(docs/DESIGN.md §6-3).
     #[tokio::test]
     #[ignore]

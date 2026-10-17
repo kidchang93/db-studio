@@ -32,6 +32,7 @@
 - DB 네이티브 타입을 **논리 타입** 집합으로 정규화: `null · bool · int · float · decimal · string · bytes · date · time · datetime · json · uuid · array`.
 - 프론트로는 `serde_json::Value`로 보내되, 컬럼 메타에 원본 DB 타입명(`db_type`)과 논리 타입(`logical_type`)을 함께 실어 그리드 렌더링·편집기 선택에 사용.
 - 정밀도 손실 위험(`NUMERIC`, `BIGINT`, `bytea`, `uuid`, 시간대)은 **문자열로 보존**하는 것을 기본으로 한다. JS `number`로 내려 정밀도를 잃지 않는다.
+- 셀은 스칼라(`string | number | boolean | null`)만 보낸다. `json`/`jsonb`(MySQL `JSON` 포함)도 **원문 텍스트 문자열**로 보낸다 — 객체로 보내면 프론트가 `[object Object]` 로 찍는다.
 - **코드페이지로 풀 수 없는 바이트는 U+FFFD(`�`)로 바꿔 보여 준다(SQL Server).** tiberius 원본은 `varchar`·`char`·`text` 값 **한 칸이라도** 디코딩에 실패하면 `Encoding error: invalid sequence` 로 결과셋 전체를 버린다. 운영 DB(Korean_Wansung) 한 행에 cp949 에 없는 바이트(0x80)가 있다는 이유로 178행짜리 테이블을 그리드로도 콘솔로도 열 수 없었다. SSMS·JDBC 처럼 대체 문자로 보여 주도록 `src-tauri/vendor/tiberius` 에 패치한 사본을 쓴다(`[patch.crates-io]`, 변경점은 그 `Cargo.toml` 머리말). `nvarchar`·`ntext` 의 짝 없는 서로게이트도 같은 규칙이다.
   - 대체된 값은 **그 셀을 직접 고치지 않는 한 DB 에 다시 쓰이지 않는다** — `UPDATE` 는 바꾼 컬럼만 `SET` 한다. PK 없는 테이블에서 이 값이 WHERE 에 들어가 행을 못 찾으면 `ensure_single_row` 가 커밋을 취소한다(§5).
   - 원본 바이트를 봐야 하면 콘솔에서 `CAST(col AS VARBINARY(MAX))` 로 본다.
