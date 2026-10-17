@@ -31,6 +31,8 @@ export function normalizeSmartQuotes(input: string): string {
 export interface SqlScan {
   /** `N` 접두사가 없는 비ASCII 문자열 리터럴(중복 제거). */
   unprefixed: string[];
+  /** 그 리터럴들의 여는 따옴표 위치(중복 포함, 앞에서부터). `N` 을 넣을 자리다. */
+  unprefixedAt: number[];
   /** 주석·문자열 밖에 INSERT/UPDATE/MERGE 가 있는가. */
   writes: boolean;
 }
@@ -42,14 +44,14 @@ export interface SqlScan {
  * 없는 문자는 서버에 닿기도 전에 `?`(0x3F) 로 바뀌고, **컬럼이 NVARCHAR 라도
  * 이미 늦다**. `N'영업부'` 여야 유니코드로 전달된다.
  *
- * 원문이 남지 않아 되돌릴 수 없는 손실이므로 실행 전에 잡아야 한다.
- * 같은 이유로 조회(SELECT)는 걸러 낼 필요가 없다 — 리터럴이 깨지면 결과가
- * 안 맞을 뿐이고 사용자가 즉시 알아채며, 매 조회마다 묻는 것이 더 해롭다.
+ * 원문이 남지 않아 되돌릴 수 없는 손실이므로 쓰기는 실행 전에 확인받는다.
+ * 조회는 묻지 않고 {@link prefixN} 으로 `N` 을 대신 붙인다(검색어마다 치기 번거롭다).
  *
  * 주석과 이스케이프된 따옴표(`''`)를 건너뛰며 한 번에 훑는다.
  */
 export function scanSqlText(sql: string): SqlScan {
   const literals: string[] = [];
+  const at: number[] = [];
   /** 문자열·주석을 걷어낸 나머지. 키워드는 여기서만 찾는다. */
   let bare = "";
   let i = 0;
@@ -93,7 +95,10 @@ export function scanSqlText(sql: string): SqlScan {
       // 여는 따옴표 바로 앞 글자가 N 이어야 유니코드 리터럴이다(사이 공백은 문법 오류).
       const prefixed = open > 0 && (sql[open - 1] === "N" || sql[open - 1] === "n");
       // eslint-disable-next-line no-control-regex
-      if (!prefixed && /[^\x00-\x7F]/.test(body)) literals.push(body);
+      if (!prefixed && /[^\x00-\x7F]/.test(body)) {
+        literals.push(body);
+        at.push(open);
+      }
       continue;
     }
     bare += sql[i];
@@ -102,8 +107,17 @@ export function scanSqlText(sql: string): SqlScan {
 
   return {
     unprefixed: [...new Set(literals)],
+    unprefixedAt: at,
     writes: /\b(insert|update|merge)\b/i.test(bare),
   };
+}
+
+/**
+ * `N` 이 빠진 비ASCII 리터럴 앞에 `N` 을 붙인다(`'영업부'` → `N'영업부'`). SQL Server 조회용.
+ * ASCII 리터럴은 손실이 없어 그대로 둔다. 뒤에서부터 넣어야 앞쪽 위치가 밀리지 않는다.
+ */
+export function prefixN(sql: string, at = scanSqlText(sql).unprefixedAt): string {
+  return at.reduceRight((s, o) => s.slice(0, o) + "N" + s.slice(o), sql);
 }
 
 export interface SqlErrorSpot {

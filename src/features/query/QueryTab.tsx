@@ -26,6 +26,7 @@ import { QueryHistory } from "./QueryHistory";
 import {
   findErrorSpot,
   normalizeSmartQuotes,
+  prefixN,
   scanSqlText,
   type SqlErrorSpot,
 } from "../../lib/sqlText";
@@ -217,6 +218,18 @@ export function QueryTab({ connId, tabId }: { connId: string; tabId: string }) {
   /** 실행 진입점(버튼 · 단축키). */
   function execute() {
     const target = executionTarget();
+    // SQL Server 조회는 N 이 빠진 한글 리터럴에 N 을 대신 붙인다(쓰기는 guarded 가 묻는다).
+    // 에디터에도 넣어 화면과 보낸 SQL 을 같게 한다 — 오류 위치·히스토리가 어긋나지 않는다.
+    if (kind === "mssql") {
+      const scan = scanSqlText(target.sql);
+      if (!scan.writes && scan.unprefixedAt.length > 0) {
+        editorRef.current?.view?.dispatch({
+          changes: scan.unprefixedAt.map((o) => ({ from: target.base + o, insert: "N" })),
+        });
+        runAuto({ ...target, sql: prefixN(target.sql, scan.unprefixedAt) });
+        return;
+      }
+    }
     guarded(target.sql, () => runAuto(target));
   }
 

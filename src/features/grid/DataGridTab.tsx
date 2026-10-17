@@ -49,7 +49,8 @@ import { RecordView } from "./RecordView";
 import { ValueViewer, prettyValue } from "./ValueViewer";
 import { SpacerRow, useVirtualRows } from "./virtualRows";
 import { columnWidths, rowNumberWidth } from "../../lib/gridLayout";
-import { normalizeSmartQuotes, rawTextInputProps } from "../../lib/sqlText";
+import { normalizeSmartQuotes, prefixN, rawTextInputProps } from "../../lib/sqlText";
+import { useConnectionStore } from "../../store/connectionStore";
 
 interface Props {
   connId: string;
@@ -162,6 +163,7 @@ function coerce(input: string, lt: LogicalType): Cell {
 
 export function DataGridTab({ connId, table, initialFilters, active = true }: Props) {
   const ui = useUiStore();
+  const kind = useConnectionStore((s) => s.connections[connId]?.handle.kind);
   const [page, setPage] = useState<TablePage | null>(null);
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
@@ -339,8 +341,11 @@ export function DataGridTab({ connId, table, initialFilters, active = true }: Pr
 
   /** WHERE 조건 적용. 조건이 그대로여도 다시 조회한다(새로고침처럼 쓰는 경우). */
   function applyWhere() {
+    // SQL Server 는 N 없는 한글 리터럴을 ? 로 바꿔 버린다 — N 을 대신 붙이고 입력창에도 보여 준다.
+    const where = kind === "mssql" ? prefixN(whereDraft) : whereDraft;
+    setWhereDraft(where);
     setOffset(0);
-    setWhereSql(whereDraft);
+    setWhereSql(where);
     setReloadKey((k) => k + 1);
   }
 
