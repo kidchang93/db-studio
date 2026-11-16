@@ -15,6 +15,7 @@ use crate::models::*;
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Instant;
 use tiberius::{
     AuthMethod, Client, Column, ColumnData, ColumnType, Config, QueryItem, QueryStream,
@@ -755,16 +756,34 @@ impl Driver for MssqlDriver {
     }
 
     async fn apply_changes(&self, req: &ApplyChangesRequest) -> Result<ApplyChangesResult> {
+        // 기본 키가 없으면 모든 컬럼 값으로 행을 찾는데, text·ntext·xml 은 `=` 비교가 안 된다
+        // (오류 402). 그 컬럼은 NULL(`IS NULL`)일 때만 남긴다 — 여러 행이 걸리면 ensure_single_row 가 취소한다.
+        let uncomparable: Vec<String> = self
+            .list_columns(&req.table)
+            .await?
+            .into_iter()
+            .filter(|c| matches!(c.db_type.as_str(), "text" | "ntext" | "xml"))
+            .map(|c| c.name)
+            .collect();
+        let key = |pk: &BTreeMap<String, Value>| {
+            let mut k = pk.clone();
+            k.retain(|c, v| v.is_null() || !uncomparable.contains(c));
+            k
+        };
+
         // 트랜잭션 시작 전에 모든 문장을 미리 만들어 검증 오류를 걸러낸다.
         let mut ops: Vec<(char, sql::Built)> = Vec::new();
         for edit in &req.edits {
             if let RowEdit::Delete { pk } = edit {
-                ops.push(('d', sql::build_delete(&DIALECT, &req.table, pk)?));
+                ops.push(('d', sql::build_delete(&DIALECT, &req.table, &key(pk))?));
             }
         }
         for edit in &req.edits {
             if let RowEdit::Update { pk, changes } = edit {
-                ops.push(('u', sql::build_update(&DIALECT, &req.table, pk, changes)?));
+                ops.push((
+                    'u',
+                    sql::build_update(&DIALECT, &req.table, &key(pk), changes)?,
+                ));
             }
         }
         for edit in &req.edits {
@@ -1743,6 +1762,46 @@ mod tests {
             0,
             "트랜잭션이 세션에 남았다"
         );
+    }
+
+    /// 기본 키 없는 테이블의 text·ntext 값은 `=` 비교가 안 돼(오류 402) 행 식별에서 빠져야 한다.
+    #[tokio::test]
+    #[ignore]
+    async fn edit_without_pk_skips_text_columns() {
+        let _ddl = DDL_LOCK.lock().await;
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        // INSERT 는 따로 보낸다 — 한 배치면 남아 있던 옛 테이블 정의로 컴파일된다.
+        for sql in [
+            "IF OBJECT_ID('dbo.nopk_text') IS NOT NULL DROP TABLE dbo.nopk_text; \
+             CREATE TABLE dbo.nopk_text (id INT, memo TEXT, note NTEXT)",
+            "INSERT INTO dbo.nopk_text VALUES (1, 'a', NULL), (2, 'b', N'나')",
+        ] {
+            d.simple_rows(sql).await.expect("준비");
+        }
+        let map = |v| serde_json::from_value(v).expect("맵");
+
+        let res = d
+            .apply_changes(&ApplyChangesRequest {
+                conn_id: "t".into(),
+                table: TableRef {
+                    database: Some("master".into()),
+                    schema: Some("dbo".into()),
+                    name: "nopk_text".into(),
+                },
+                edits: vec![
+                    // NULL 인 note 는 `IS NULL` 로 남는다.
+                    RowEdit::Update {
+                        pk: map(serde_json::json!({"id": 1, "memo": "a", "note": null})),
+                        changes: map(serde_json::json!({"id": 10})),
+                    },
+                    RowEdit::Delete {
+                        pk: map(serde_json::json!({"id": 2, "memo": "b", "note": "나"})),
+                    },
+                ],
+            })
+            .await
+            .expect("text 컬럼이 있어도 커밋돼야 한다");
+        assert_eq!((res.updated, res.deleted), (1, 1));
     }
 
     /// 자동완성용 스냅샷이 지정한 DB·스키마에서 테이블+컬럼을 가져오는지 확인한다.

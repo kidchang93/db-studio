@@ -42,7 +42,7 @@
 
 - **값**은 항상 드라이버 파라미터 바인딩(`$1`/`?`)으로 전달. 문자열 이어붙이기 금지.
 - **식별자**(테이블/컬럼/스키마명)는 값 바인딩이 불가하므로 DB별 규칙으로 quoting: Postgres/SQLite `"ident"`, MySQL `` `ident` ``, SQL Server `[ident]`. 내부 따옴표는 이스케이프. 이 로직은 driver별 `quote_ident`로 캡슐화.
-- 그리드 CRUD의 `UPDATE/DELETE`는 **행을 하나로 특정하는 WHERE**만 쓴다. 기본 키가 있으면 그 컬럼을, 없으면 **모든 컬럼의 원본 값**을 조건으로 쓴다(바이너리 컬럼은 `=` 비교를 DB가 거부하거나 부정확해 제외).
+- 그리드 CRUD의 `UPDATE/DELETE`는 **행을 하나로 특정하는 WHERE**만 쓴다. 기본 키가 있으면 그 컬럼을, 없으면 **모든 컬럼의 원본 값**을 조건으로 쓴다(바이너리 컬럼은 `=` 비교를 DB가 거부하거나 부정확해 제외). SQL Server 의 `text`·`ntext`·`xml` 도 `=` 비교가 안 돼(오류 402) 드라이버가 조건에서 뺀다 — 값이 NULL 이면 `IS NULL` 로 남긴다(`db/mssql.rs` 의 `apply_changes`, 회귀 테스트 `edit_without_pk_skips_text_columns`).
   - 값으로 찾는 쪽은 행이 유일하다는 보장이 없다. 그래서 실행 후 **영향 행 수가 정확히 1인지 확인**하고, 아니면 트랜잭션째 취소한다(`db/sql.rs` 의 `ensure_single_row`). 0행이면 보고 있던 행이 그사이 바뀐 것이라 조용히 넘기지 않고 알린다.
   - **이 검사가 되돌릴 수 없는 다중 변경을 막는 유일한 방어선이다.** 드라이버를 추가하거나 `apply_changes` 를 고칠 때 빠뜨리면 안 된다. sqlx 계열은 `?` 로 빠져나가면 트랜잭션이 drop 되며 롤백되지만, SQL Server 는 트랜잭션을 직접 몰기 때문에 `ROLLBACK` 을 손으로 보내야 한다.
   - 회귀 테스트: `db/sqlite.rs` 의 `edit_without_primary_key`(서버 불필요).
