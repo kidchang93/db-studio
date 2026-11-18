@@ -37,6 +37,7 @@
   - 대체된 값은 **그 셀을 직접 고치지 않는 한 DB 에 다시 쓰이지 않는다** — `UPDATE` 는 바꾼 컬럼만 `SET` 한다. PK 없는 테이블에서 이 값이 WHERE 에 들어가 행을 못 찾으면 `ensure_single_row` 가 커밋을 취소한다(§5).
   - 원본 바이트를 봐야 하면 콘솔에서 `CAST(col AS VARBINARY(MAX))` 로 본다.
   - 회귀 테스트: `db/mssql.rs` 의 `undecodable_bytes_become_replacement_char`.
+- **SQL Server `datetime`·`smalldatetime` 은 ms(소수 3자리)로 반올림해 보낸다.** `datetime` 은 1/300초 단위라 그대로 찍으면 `.003333333` 이 되는데, PK 없는 테이블에서 이 값이 WHERE 에 들어가면 소수 3자리까지만 받는 문자열→`datetime` 변환이 오류 241 로 커밋을 깬다. SSMS 표시(`.003`·`.007`)와 같고 되돌려 변환해도 같은 값이다. `datetime2`·`time` 은 9자리도 받아서 그대로 둔다(회귀 테스트 `edit_without_pk_matches_datetime_read_back`).
 
 ## 5. SQL 안전성 (필수)
 

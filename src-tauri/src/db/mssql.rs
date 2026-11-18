@@ -179,11 +179,16 @@ fn cell_to_json(d: &ColumnData) -> Value {
 /// 날짜/시간 컬럼은 ColumnData 를 직접 읽으면 내부 표현이 노출되므로
 /// chrono 타입으로 변환해 사람이 읽을 수 있는 문자열로 만든다.
 fn datetime_cell(row: &TdsRow, idx: usize, ct: ColumnType) -> Option<Value> {
+    use chrono::SubsecRound;
     let v = match ct {
-        ColumnType::Datetime
-        | ColumnType::Datetime2
-        | ColumnType::Datetimen
-        | ColumnType::Datetime4 => row
+        // datetime 은 1/300초라 `.003333333` 으로 찍히는데, 그 값으로 행을 찾으면 소수 3자리까지만
+        // 받는 변환이 오류 241 로 실패한다. SQL Server 처럼 ms 로 반올림한다.
+        ColumnType::Datetime | ColumnType::Datetimen | ColumnType::Datetime4 => row
+            .try_get::<chrono::NaiveDateTime, _>(idx)
+            .ok()
+            .flatten()
+            .map(|d| Value::String(d.round_subsecs(3).to_string())),
+        ColumnType::Datetime2 => row
             .try_get::<chrono::NaiveDateTime, _>(idx)
             .ok()
             .flatten()
@@ -1802,6 +1807,46 @@ mod tests {
             .await
             .expect("text 컬럼이 있어도 커밋돼야 한다");
         assert_eq!((res.updated, res.deleted), (1, 1));
+    }
+
+    /// datetime 은 1/300초 단위라 그대로 찍으면 `.003333333` 이 되고, 그 값으로 행을 찾으면
+    /// 소수 3자리까지만 받는 datetime 변환이 오류 241 로 실패한다. 읽은 값 그대로 지울 수 있어야 한다.
+    #[tokio::test]
+    #[ignore]
+    async fn edit_without_pk_matches_datetime_read_back() {
+        let _ddl = DDL_LOCK.lock().await;
+        let d = MssqlDriver::connect(&test_config()).await.expect("연결");
+        for sql in [
+            "IF OBJECT_ID('dbo.nopk_dt') IS NOT NULL DROP TABLE dbo.nopk_dt; \
+             CREATE TABLE dbo.nopk_dt (id INT, at DATETIME)",
+            "INSERT INTO dbo.nopk_dt VALUES (1, '2024-01-15 10:30:00.003')",
+        ] {
+            d.simple_rows(sql).await.expect("준비");
+        }
+        let rows = d
+            .simple_rows("SELECT id, at FROM dbo.nopk_dt")
+            .await
+            .expect("조회");
+        let row = rows_to_result(&rows, 0, false).rows.remove(0);
+        assert_eq!(row[1], Value::from("2024-01-15 10:30:00.003"));
+
+        let pk = BTreeMap::from([
+            ("id".to_string(), row[0].clone()),
+            ("at".to_string(), row[1].clone()),
+        ]);
+        let res = d
+            .apply_changes(&ApplyChangesRequest {
+                conn_id: "t".into(),
+                table: TableRef {
+                    database: Some("master".into()),
+                    schema: Some("dbo".into()),
+                    name: "nopk_dt".into(),
+                },
+                edits: vec![RowEdit::Delete { pk }],
+            })
+            .await
+            .expect("읽은 datetime 값으로 행을 찾아야 한다");
+        assert_eq!(res.deleted, 1);
     }
 
     /// 자동완성용 스냅샷이 지정한 DB·스키마에서 테이블+컬럼을 가져오는지 확인한다.
